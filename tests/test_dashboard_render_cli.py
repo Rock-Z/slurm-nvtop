@@ -240,13 +240,14 @@ def test_render_snapshot_omits_repeated_gpu_label_block_and_draws_node_history()
     )
 
     assert rendered.count("GPU  Name        Persistence-M") == 1
-    assert rendered.count("GPU MEM") == 1
+    assert "GPU MEM" not in rendered
+    assert rendered.count("MEM ↑ / UTL ↓") == 1
     assert "╴30s├" in rendered
     assert "now" in rendered
     assert "gpu001" in rendered
     assert "gpu002" in rendered
     assert "Bus-Id" not in rendered
-    assert rendered.index("GPU MEM") < rendered.index("Processes:")
+    assert rendered.index("MEM ↑ / UTL ↓") < rendered.index("Processes:")
     lines = rendered.splitlines()
     second_node_line = next(idx for idx, line in enumerate(lines) if "[gpu002]" in line)
     assert lines[second_node_line + 1].startswith("├")
@@ -290,7 +291,7 @@ def test_render_snapshot_keeps_history_before_processes_when_height_is_tight():
         node_mem_histories={"gpu001": (5, 10, 15, 20, 25, 30, 35, 40)},
     )
 
-    assert "GPU MEM" in rendered
+    assert "MEM ↑ / UTL ↓" in rendered
     assert "Processes:" not in rendered
     assert "lines hidden" not in rendered
 

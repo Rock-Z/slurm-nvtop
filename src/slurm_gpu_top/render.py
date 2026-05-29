@@ -295,12 +295,13 @@ def _node_history_cell(
     unicode: bool,
 ) -> list[str]:
     side_height = 3 if width < 34 else 4
-    label_text = "GPU MEM ↑ / GPU UTL ↓" if unicode else "GPU MEM up / GPU UTL down"
+    label_text = "MEM ↑ / UTL ↓" if unicode else "MEM up / UTL down"
     mem_graph = _history_graph_lines(mem_history, width=width, height=side_height, direction="up", unicode=unicode)
     util_graph = _history_graph_lines(util_history, width=width, height=side_height, direction="down", unicode=unicode)
+    if label and mem_graph:
+        mem_graph[0] = _overlay_left(mem_graph[0], label_text, width)
     return [
         _style(_clip_visible(node, width), "bright_cyan", color),
-        _style(label_text, "bold", color) if label else "",
         *_style_lines(mem_graph, "magenta", color),
         _style(_timeline_axis(width, unicode=unicode), "bright_black", color),
         *_style_lines(util_graph, "cyan", color),
@@ -417,6 +418,11 @@ def _timeline_axis(width: int, *, unicode: bool) -> str:
 
 def _style_lines(lines: Sequence[str], color_name: str, enabled: bool) -> list[str]:
     return [_style(line, color_name, enabled) for line in lines]
+
+
+def _overlay_left(line: str, label: str, width: int) -> str:
+    label = _clip_visible(label, width)
+    return (label + line[_visible_len(label) :])[:width]
 
 
 def _split_widths(inner: int, count: int) -> list[int]:
