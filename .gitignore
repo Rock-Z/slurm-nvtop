@@ -4,6 +4,11 @@ __pycache__/
 .ruff_cache/
 .mypy_cache/
 .venv/
+.coverage
+htmlcov/
+.DS_Store
+.idea/
+.vscode/
 build/
 dist/
 *.egg-info/
