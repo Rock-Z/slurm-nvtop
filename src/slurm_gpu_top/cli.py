@@ -8,6 +8,7 @@ import time
 from typing import Sequence
 
 from .dashboard import build_snapshot
+from .history import UtilizationHistory
 from .models import (
     ClusterSnapshot,
     GPUDevice,
@@ -21,9 +22,20 @@ from .render import render_snapshot
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
+    color = _color_enabled(args.color)
     if args.mock_json:
         snapshot = _load_mock_snapshot(args.mock_json)
-        print(render_snapshot(snapshot))
+        history = UtilizationHistory(maxlen=args.history)
+        history.record(snapshot)
+        print(
+            render_snapshot(
+                snapshot,
+                color=color,
+                unicode=not args.no_unicode,
+                all_gpu_history=history.all_history(),
+                gpu_histories={key: tuple(values) for key, values in history.by_gpu.items()},
+            )
+        )
         return 0
 
     config = SnapshotBuilderConfig(
@@ -33,13 +45,24 @@ def main(argv: Sequence[str] | None = None) -> int:
         command_timeout_s=args.timeout,
         max_workers=args.max_workers,
     )
+    history = UtilizationHistory(maxlen=args.history)
 
     try:
         while True:
             snapshot = build_snapshot(config=config)
+            history.record(snapshot)
             if not args.no_clear and not args.once and sys.stdout.isatty():
                 print("\033[2J\033[H", end="")
-            print(render_snapshot(snapshot), flush=True)
+            print(
+                render_snapshot(
+                    snapshot,
+                    color=color,
+                    unicode=not args.no_unicode,
+                    all_gpu_history=history.all_history(),
+                    gpu_histories={key: tuple(values) for key, values in history.by_gpu.items()},
+                ),
+                flush=True,
+            )
             if args.once:
                 return 1 if snapshot.errors else 0
             time.sleep(args.interval)
@@ -67,8 +90,24 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--timeout", type=float, default=8.0, help="per-command timeout in seconds")
     parser.add_argument("--max-workers", type=int, default=16, help="maximum concurrent node polls")
     parser.add_argument("--no-clear", action="store_true", help="do not clear the terminal between refreshes")
+    parser.add_argument("--no-unicode", action="store_true", help="use ASCII fallbacks instead of Unicode bars")
+    parser.add_argument(
+        "--color",
+        choices=("auto", "always", "never"),
+        default="auto",
+        help="color output policy",
+    )
+    parser.add_argument("--history", type=int, default=120, help="number of utilization samples to keep")
     parser.add_argument("--mock-json", help="render a saved JSON snapshot instead of polling Slurm")
     return parser.parse_args(argv)
+
+
+def _color_enabled(policy: str) -> Optional[bool]:
+    if policy == "always":
+        return True
+    if policy == "never":
+        return False
+    return None
 
 
 def _load_mock_snapshot(path: str) -> ClusterSnapshot:
