@@ -39,6 +39,8 @@ def render_snapshot(
     unicode: bool = True,
     all_gpu_history: Sequence[Optional[int]] = (),
     gpu_histories: Optional[dict[tuple[str, str], Sequence[Optional[int]]]] = None,
+    node_util_histories: Optional[dict[str, Sequence[Optional[int]]]] = None,
+    node_mem_histories: Optional[dict[str, Sequence[Optional[int]]]] = None,
     version: str = "0.1.0",
 ) -> str:
     del all_gpu_history, gpu_histories
@@ -72,10 +74,30 @@ def render_snapshot(
             avg_mem=avg_mem,
         ),
     )
+    history_lines = list(
+        _node_history_box(
+            snapshot,
+            width=width,
+            color=color,
+            unicode=unicode,
+            node_util_histories=node_util_histories or {},
+            node_mem_histories=node_mem_histories or {},
+        ),
+    )
     process_lines = ["", *_cluster_process_box(snapshot, width=width, color=color, unicode=unicode)]
     lines.extend(gpu_lines)
+    if history_lines:
+        if not history_lines[0]:
+            lines.extend(history_lines)
+        else:
+            lines.extend(["", *history_lines])
     if height is None or len(lines) + len(process_lines) <= height:
-        lines.extend(process_lines)
+        if history_lines:
+            chart_count = len(history_lines) if not history_lines[0] else len(history_lines) + 1
+            chart_lines = lines[-chart_count:]
+            lines = lines[:-chart_count] + process_lines + chart_lines
+        else:
+            lines.extend(process_lines)
     lines = _fit_height(lines, height, color=color)
     return "\n".join(lines)
 
@@ -111,24 +133,27 @@ def _cluster_gpu_box(
 
     yield chars["tl"] + chars["h2"] * inner + chars["tr"]
     yield _box_line(title, inner, chars)
-    for node_idx, node in enumerate(snapshot.nodes):
+    labels_emitted = False
+    for node in snapshot.nodes:
         yield chars["ml_bold"] + chars["h2"] * inner + chars["mr_bold"]
         yield _box_line(_node_status(node, color=color), inner, chars)
         if node.error:
             yield _box_line(_style(f"! {node.error}", "bright_red", color), inner, chars)
             continue
-        yield _joint_line(chars, (c1, c2, c3, c4), "top")
-        yield _row(
-            ("GPU  Name        Persistence-M", "Bus-Id        Disp.A", "MIG M.   Uncorr. ECC", ""),
-            (c1, c2, c3, c4),
-            chars,
-        )
-        yield _row(
-            ("Fan  Temp  Perf  Pwr:Usage/Cap", "        Memory-Usage", "GPU-Util  Compute M.", ""),
-            (c1, c2, c3, c4),
-            chars,
-        )
-        yield _joint_line(chars, (c1, c2, c3, c4), "mid_bold")
+        if not labels_emitted:
+            yield _joint_line(chars, (c1, c2, c3, c4), "top")
+            yield _row(
+                ("GPU  Name        Persistence-M", "Bus-Id        Disp.A", "MIG M.   Uncorr. ECC", ""),
+                (c1, c2, c3, c4),
+                chars,
+            )
+            yield _row(
+                ("Fan  Temp  Perf  Pwr:Usage/Cap", "        Memory-Usage", "GPU-Util  Compute M.", ""),
+                (c1, c2, c3, c4),
+                chars,
+            )
+            yield _joint_line(chars, (c1, c2, c3, c4), "mid_bold")
+            labels_emitted = True
         if not node.gpus:
             yield _box_line(_style("No GPUs reported by nvidia-smi.", "yellow", color), inner, chars)
             continue
@@ -197,6 +222,204 @@ def _node_status(node: NodeSnapshot, *, color: bool) -> str:
         + _style(_format_jobs(node.jobs), "yellow", color)
         + suffix
     )
+
+
+def _node_history_box(
+    snapshot: ClusterSnapshot,
+    *,
+    width: int,
+    color: bool,
+    unicode: bool,
+    node_util_histories: Mapping[str, Sequence[Optional[int]]],
+    node_mem_histories: Mapping[str, Sequence[Optional[int]]],
+) -> Iterable[str]:
+    nodes = [
+        node
+        for node in snapshot.nodes
+        if node.gpus and (node.node in node_util_histories or node.node in node_mem_histories)
+    ]
+    if not nodes:
+        return
+
+    chars = _box_chars(unicode)
+    w = min(width, 140)
+    inner = w - 2
+    max_cells = max(1, (inner + 1) // 18)
+    omitted = max(0, len(nodes) - max_cells)
+    nodes = nodes[:max_cells]
+    node_labels = [node.node for node in nodes]
+    if omitted:
+        node_labels[-1] = f"{node_labels[-1]} (+{omitted})"
+    cell_widths = _split_widths(inner, len(nodes))
+
+    yield chars["tl"] + chars["tj"].join(chars["h2"] * cell_width for cell_width in cell_widths) + chars["tr"]
+    cells = [
+        _node_history_cell(
+            node_labels[idx],
+            width=cell_widths[idx],
+            util_history=node_util_histories.get(node.node, ()),
+            mem_history=node_mem_histories.get(node.node, ()),
+            label=idx == 0,
+            color=color,
+            unicode=unicode,
+        )
+        for idx, node in enumerate(nodes)
+    ]
+    row_count = max(len(cell) for cell in cells)
+    for row_idx in range(row_count):
+        yield _multi_cell_row(
+            [cell[row_idx] if row_idx < len(cell) else "" for cell in cells],
+            cell_widths,
+            chars,
+        )
+    yield chars["bl"] + chars["bj"].join(chars["h2"] * cell_width for cell_width in cell_widths) + chars["br"]
+
+
+def _node_history_cell(
+    node: str,
+    *,
+    width: int,
+    util_history: Sequence[Optional[int]],
+    mem_history: Sequence[Optional[int]],
+    label: bool,
+    color: bool,
+    unicode: bool,
+) -> list[str]:
+    side_height = 3 if width < 34 else 4
+    label_text = "GPU MEM ↑ / GPU UTL ↓" if unicode else "GPU MEM up / GPU UTL down"
+    mem_graph = _history_graph_lines(mem_history, width=width, height=side_height, direction="up", unicode=unicode)
+    util_graph = _history_graph_lines(util_history, width=width, height=side_height, direction="down", unicode=unicode)
+    return [
+        _style(_clip_visible(node, width), "bright_cyan", color),
+        _style(label_text, "bold", color) if label else "",
+        *_style_lines(mem_graph, "magenta", color),
+        _style(_timeline_axis(width, unicode=unicode), "bright_black", color),
+        *_style_lines(util_graph, "cyan", color),
+    ]
+
+
+def _history_graph_lines(
+    values: Sequence[Optional[int]],
+    *,
+    width: int,
+    height: int,
+    direction: str,
+    unicode: bool,
+) -> list[str]:
+    if width <= 0 or height <= 0:
+        return []
+    if not unicode:
+        return _ascii_history_graph(values, width=width, height=height, direction=direction)
+    samples = _history_samples(values, width * 2)
+    levels = [_history_level(value, height) for value in samples]
+    lines = []
+    for row in range(height):
+        chars = []
+        for idx in range(0, len(levels), 2):
+            chars.append(_braille_history_cell(levels[idx], levels[idx + 1], row, height, direction=direction))
+        lines.append("".join(chars))
+    return lines
+
+
+def _ascii_history_graph(
+    values: Sequence[Optional[int]],
+    *,
+    width: int,
+    height: int,
+    direction: str,
+) -> list[str]:
+    samples = _history_samples(values, width)
+    levels = [_history_level(value, height) for value in samples]
+    lines = []
+    for row in range(height):
+        chars = []
+        for level in levels:
+            if direction == "up":
+                row_from_bottom = height - 1 - row
+                chars.append("#" if level > row_from_bottom * 4 else " ")
+            else:
+                row_from_top = row
+                chars.append("#" if level > row_from_top * 4 else " ")
+        lines.append("".join(chars))
+    return lines
+
+
+def _history_samples(values: Sequence[Optional[int]], count: int) -> list[Optional[int]]:
+    recent = list(values)[-count:]
+    return [None] * max(0, count - len(recent)) + recent
+
+
+def _history_level(value: Optional[int], height: int) -> int:
+    if value is None:
+        return 0
+    value = max(0.0, min(100.0, float(value)))
+    if value == 0.0:
+        return 0
+    return max(1, round(value / 100.0 * height * 4))
+
+
+def _braille_history_cell(left_level: int, right_level: int, row: int, height: int, *, direction: str) -> str:
+    left_count = _subcell_count(left_level, row, height, direction=direction)
+    right_count = _subcell_count(right_level, row, height, direction=direction)
+    mask = _braille_mask(left_count, side="left", direction=direction)
+    mask |= _braille_mask(right_count, side="right", direction=direction)
+    return " " if mask == 0 else chr(0x2800 + mask)
+
+
+def _subcell_count(level: int, row: int, height: int, *, direction: str) -> int:
+    if direction == "up":
+        base = (height - 1 - row) * 4
+    else:
+        base = row * 4
+    return min(max(level - base, 0), 4)
+
+
+def _braille_mask(count: int, *, side: str, direction: str) -> int:
+    if count <= 0:
+        return 0
+    if side == "left":
+        dots = (7, 3, 2, 1) if direction == "up" else (1, 2, 3, 7)
+    else:
+        dots = (8, 6, 5, 4) if direction == "up" else (4, 5, 6, 8)
+    mask = 0
+    for dot in dots[:count]:
+        mask |= 1 << (dot - 1)
+    return mask
+
+
+def _timeline_axis(width: int, *, unicode: bool) -> str:
+    axis = "─" if unicode else "-"
+    line = [axis] * width
+    labels = [
+        (3, "now"),
+        (19, "╴30s├" if unicode else "-30s|"),
+        (34, "╴60s├" if unicode else "-60s|"),
+        (65, "╴120s├" if unicode else "-120s|"),
+    ]
+    occupied_until = width + 1
+    for offset, label in labels:
+        start = max(0, width - offset)
+        if start + len(label) > width or start + len(label) > occupied_until:
+            continue
+        line[start : start + len(label)] = label
+        occupied_until = start
+    return "".join(line)
+
+
+def _style_lines(lines: Sequence[str], color_name: str, enabled: bool) -> list[str]:
+    return [_style(line, color_name, enabled) for line in lines]
+
+
+def _split_widths(inner: int, count: int) -> list[int]:
+    if count <= 0:
+        return []
+    available = max(count, inner - (count - 1))
+    base, remainder = divmod(available, count)
+    return [base + (1 if idx < remainder else 0) for idx in range(count)]
+
+
+def _multi_cell_row(values: Sequence[str], widths: Sequence[int], chars: dict[str, str]) -> str:
+    return chars["v"] + chars["v"].join(_pad(value, width) for value, width in zip(values, widths)) + chars["v"]
 
 
 def _cluster_process_box(

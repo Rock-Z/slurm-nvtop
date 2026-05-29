@@ -189,6 +189,63 @@ def test_render_snapshot_uses_one_gpu_table_grouped_by_node():
     assert rendered.index("[gpu002]") > rendered.index("UTL:")
 
 
+def test_render_snapshot_omits_repeated_gpu_label_block_and_draws_node_history():
+    first = _single_gpu_snapshot(util=75, mem=50)
+    gpu = first.nodes[0].gpus[0]
+    second_gpu = GPUDevice(
+        node="gpu002",
+        index=0,
+        uuid="GPU-b",
+        name=gpu.name,
+        gpu_util_percent=25,
+        mem_util_percent=20,
+        mem_used_mib=16000,
+        mem_total_mib=gpu.mem_total_mib,
+        temperature_c=gpu.temperature_c,
+        power_draw_w=gpu.power_draw_w,
+        power_limit_w=gpu.power_limit_w,
+        persistence_mode=gpu.persistence_mode,
+        pci_bus_id="00000000:E6:00.0",
+        display_active=gpu.display_active,
+        mig_mode=gpu.mig_mode,
+        ecc_errors=gpu.ecc_errors,
+        fan_speed_percent=gpu.fan_speed_percent,
+        performance_state=gpu.performance_state,
+        compute_mode=gpu.compute_mode,
+        sm_clock_mhz=gpu.sm_clock_mhz,
+        processes=gpu.processes,
+    )
+    snapshot = ClusterSnapshot(
+        nodes=(
+            first.nodes[0],
+            NodeSnapshot(node="gpu002", jobs=first.nodes[0].jobs, gpus=(second_gpu,), host=first.nodes[0].host),
+        ),
+        generated_at=10,
+    )
+
+    rendered = render_snapshot(
+        snapshot,
+        width=120,
+        color=False,
+        unicode=True,
+        node_util_histories={
+            "gpu001": (10, 30, 60, 90, 80, 70, 75, 75),
+            "gpu002": (90, 70, 50, 30, 20, 25, 25, 25),
+        },
+        node_mem_histories={
+            "gpu001": (5, 10, 15, 20, 25, 30, 35, 40),
+            "gpu002": (40, 35, 30, 25, 20, 20, 20, 20),
+        },
+    )
+
+    assert rendered.count("GPU  Name        Persistence-M") == 1
+    assert rendered.count("GPU MEM") == 1
+    assert "╴30s├" in rendered
+    assert "now" in rendered
+    assert "gpu001" in rendered
+    assert "gpu002" in rendered
+
+
 def test_render_snapshot_respects_terminal_height():
     snapshot = _single_gpu_snapshot(util=75, mem=50)
 
@@ -204,6 +261,24 @@ def test_render_snapshot_drops_process_table_before_gpu_truncation():
     rendered = render_snapshot(snapshot, width=120, height=13, color=False, unicode=True)
 
     assert "UTL:" in rendered
+    assert "Processes:" not in rendered
+    assert "lines hidden" not in rendered
+
+
+def test_render_snapshot_keeps_history_before_processes_when_height_is_tight():
+    snapshot = _single_gpu_snapshot(util=75, mem=50)
+
+    rendered = render_snapshot(
+        snapshot,
+        width=120,
+        height=26,
+        color=False,
+        unicode=True,
+        node_util_histories={"gpu001": (10, 30, 60, 90, 80, 70, 75, 75)},
+        node_mem_histories={"gpu001": (5, 10, 15, 20, 25, 30, 35, 40)},
+    )
+
+    assert "GPU MEM" in rendered
     assert "Processes:" not in rendered
     assert "lines hidden" not in rendered
 

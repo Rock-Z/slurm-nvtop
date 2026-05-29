@@ -40,6 +40,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 unicode=not args.no_unicode,
                 all_gpu_history=history.all_history(),
                 gpu_histories={key: tuple(values) for key, values in history.by_gpu.items()},
+                node_util_histories=history.node_util_histories(),
+                node_mem_histories=history.node_mem_histories(),
                 version=__version__,
             )
         )
@@ -80,6 +82,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 unicode=not args.no_unicode,
                 all_gpu_history=history.all_history(),
                 gpu_histories={key: tuple(values) for key, values in history.by_gpu.items()},
+                node_util_histories=history.node_util_histories(),
+                node_mem_histories=history.node_mem_histories(),
                 version=__version__,
             )
             if live_fullscreen:
