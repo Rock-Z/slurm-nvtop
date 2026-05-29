@@ -1,0 +1,45 @@
+{
+  "generated_at": 1780079719,
+  "nodes": [
+    {
+      "node": "gpu001",
+      "jobs": [
+        {
+          "job_id": "123",
+          "name": "train",
+          "user": "ez275",
+          "state": "RUNNING",
+          "elapsed": "0:42",
+          "node_count": 1,
+          "nodelist": "gpu001",
+          "gres": "gpu:a100:1",
+          "tres": "gres/gpu=1",
+          "nodes": ["gpu001"]
+        }
+      ],
+      "gpus": [
+        {
+          "node": "gpu001",
+          "index": 0,
+          "uuid": "GPU-aaa",
+          "name": "NVIDIA A100",
+          "gpu_util_percent": 83,
+          "mem_util_percent": 40,
+          "mem_used_mib": 32500,
+          "mem_total_mib": 81920,
+          "temperature_c": 62,
+          "power_draw_w": 241.5,
+          "power_limit_w": 400.0,
+          "processes": [
+            {
+              "pid": 9100,
+              "name": "python",
+              "used_memory_mib": 32000,
+              "gpu_uuid": "GPU-aaa"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

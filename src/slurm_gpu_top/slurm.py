@@ -149,8 +149,12 @@ def _with_scontrol_details(
 
 def parse_scontrol_key_values(text: str) -> dict:
     fields = {}
-    for match in re.finditer(r"(\S+?)=([^=]*?)(?=\s+\S+?=|$)", text.strip()):
-        fields[match.group(1)] = match.group(2).strip()
+    matches = list(re.finditer(r"(?:^|\s)([A-Za-z][A-Za-z0-9_]+)=", text.strip()))
+    for idx, match in enumerate(matches):
+        key = match.group(1)
+        value_start = match.end()
+        value_end = matches[idx + 1].start() if idx + 1 < len(matches) else len(text.strip())
+        fields[key] = text.strip()[value_start:value_end].strip()
     return fields
 
 
