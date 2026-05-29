@@ -28,6 +28,7 @@ COLORS = {
     "bright_cyan": "\033[96m",
 }
 PARTIALS = "▏▎▍▌▋▊▉"
+MIN_DASHBOARD_WIDTH = 80
 
 
 def render_snapshot(
@@ -45,8 +46,17 @@ def render_snapshot(
 ) -> str:
     del all_gpu_history, gpu_histories
     term_width, _term_height = _terminal_size()
-    width = max(79, width or term_width)
+    requested_width = width or term_width
     color = _should_color() if color is None else color
+    if requested_width < MIN_DASHBOARD_WIDTH:
+        return _render_too_narrow(
+            requested_width,
+            min_width=MIN_DASHBOARD_WIDTH,
+            color=color,
+            unicode=unicode,
+            version=version,
+        )
+    width = requested_width
     gpus = _all_gpus(snapshot)
     avg_util = _avg(gpu.gpu_util_percent for gpu in gpus)
     avg_mem = _avg(gpu.mem_util_percent for gpu in gpus)
@@ -81,6 +91,25 @@ def render_snapshot(
     if height is None or len(lines) + len(process_lines) <= height:
         lines.extend(process_lines)
     lines = _fit_height(lines, height, color=color)
+    return "\n".join(lines)
+
+
+def _render_too_narrow(width: int, *, min_width: int, color: bool, unicode: bool, version: str) -> str:
+    width = max(1, width)
+    if width < 24:
+        return _clip_visible(f"SGTOP {version}: need {min_width}+ columns", width)
+
+    chars = _box_chars(unicode)
+    inner = width - 2
+    lines = [
+        chars["tl"] + chars["h2"] * inner + chars["tr"],
+        _box_line(_style(f"SGTOP {version}", "bold", color), inner, chars),
+        chars["ml_bold"] + chars["h2"] * inner + chars["mr_bold"],
+        _box_line(_style("Terminal width is too narrow.", "bright_red", color), inner, chars),
+        _box_line(f"Current width: {width}; minimum: {min_width}.", inner, chars),
+        _box_line(f"Resize to at least {min_width} columns.", inner, chars),
+        chars["bl"] + chars["h2"] * inner + chars["br"],
+    ]
     return "\n".join(lines)
 
 

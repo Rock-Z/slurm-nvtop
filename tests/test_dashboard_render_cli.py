@@ -181,6 +181,27 @@ def test_render_snapshot_compact_width_keeps_history_graph_visible():
     assert "A100" in rendered
 
 
+def test_render_snapshot_refuses_width_below_eighty_columns():
+    snapshot = _single_gpu_snapshot(util=75, mem=50)
+    rendered = render_snapshot(snapshot, width=79, color=False, unicode=True)
+    lines = rendered.splitlines()
+
+    assert "Terminal width is too narrow." in rendered
+    assert "minimum: 80" in rendered
+    assert "GPU  Name" not in rendered
+    assert "Processes" not in rendered
+    assert all(len(line) <= 79 for line in lines)
+
+
+def test_render_snapshot_tiny_width_error_still_fits_terminal():
+    snapshot = _single_gpu_snapshot(util=75, mem=50)
+    rendered = render_snapshot(snapshot, width=12, color=False, unicode=True)
+
+    assert rendered.startswith("SGTOP")
+    assert "GPU  Name" not in rendered
+    assert len(rendered) <= 12
+
+
 def test_render_snapshot_uses_one_gpu_table_grouped_by_node():
     first = _single_gpu_snapshot(util=75, mem=50)
     second_node = NodeSnapshot(
