@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import sys
 import time
 from typing import Sequence
@@ -49,26 +50,32 @@ def main(argv: Sequence[str] | None = None) -> int:
         max_workers=args.max_workers,
     )
     history = UtilizationHistory(maxlen=args.history)
+    live_fullscreen = not args.once and not args.no_clear and sys.stdout.isatty()
 
     try:
-        if not args.once and not args.no_clear and sys.stdout.isatty():
-            print("\033[?25l", end="", flush=True)
+        if live_fullscreen:
+            print("\033[?1049h\033[?25l\033[H\033[J", end="", flush=True)
         while True:
             snapshot = build_snapshot(config=config)
             history.record(snapshot)
+            terminal_size = shutil.get_terminal_size(fallback=(120, 24))
             if not args.no_clear and not args.once:
                 print("\033[H\033[J", end="")
-            print(
-                render_snapshot(
-                    snapshot,
-                    color=color,
-                    unicode=not args.no_unicode,
-                    all_gpu_history=history.all_history(),
-                    gpu_histories={key: tuple(values) for key, values in history.by_gpu.items()},
-                    version=__version__,
-                ),
-                flush=True,
+            rendered = render_snapshot(
+                snapshot,
+                width=terminal_size.columns,
+                height=terminal_size.lines if live_fullscreen else None,
+                color=color,
+                unicode=not args.no_unicode,
+                all_gpu_history=history.all_history(),
+                gpu_histories={key: tuple(values) for key, values in history.by_gpu.items()},
+                version=__version__,
             )
+            if live_fullscreen:
+                sys.stdout.write(rendered)
+                sys.stdout.flush()
+            else:
+                print(rendered, flush=True)
             if args.once:
                 return 1 if snapshot.errors else 0
             time.sleep(args.interval)
@@ -77,8 +84,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             print()
         return 130
     finally:
-        if not args.once and not args.no_clear and sys.stdout.isatty():
-            print("\033[?25h", end="", flush=True)
+        if live_fullscreen:
+            print("\033[?25h\033[?1049l", end="", flush=True)
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:

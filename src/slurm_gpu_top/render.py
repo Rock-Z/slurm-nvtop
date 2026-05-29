@@ -34,6 +34,7 @@ def render_snapshot(
     snapshot: ClusterSnapshot,
     *,
     width: Optional[int] = None,
+    height: Optional[int] = None,
     color: Optional[bool] = None,
     unicode: bool = True,
     all_gpu_history: Sequence[Optional[int]] = (),
@@ -41,7 +42,9 @@ def render_snapshot(
     version: str = "0.1.0",
 ) -> str:
     del all_gpu_history, gpu_histories
-    width = max(79, width or _terminal_width())
+    term_width, term_height = _terminal_size()
+    width = max(79, width or term_width)
+    height = height or term_height
     color = _should_color() if color is None else color
     gpus = _all_gpus(snapshot)
     avg_util = _avg(gpu.gpu_util_percent for gpu in gpus)
@@ -72,6 +75,7 @@ def render_snapshot(
     )
     lines.append("")
     lines.extend(_cluster_process_box(snapshot, width=width, color=color, unicode=unicode))
+    lines = _fit_height(lines, height, color=color)
     return "\n".join(lines)
 
 
@@ -657,6 +661,16 @@ def _visible_len(text: str) -> int:
     return len(ANSI_RE.sub("", text))
 
 
+def _fit_height(lines: list[str], height: Optional[int], *, color: bool) -> list[str]:
+    if height is None or height <= 0 or len(lines) <= height:
+        return lines
+    if height == 1:
+        return [_style("Output truncated: terminal is too short.", "yellow", color)]
+    omitted = len(lines) - height + 1
+    footer = _style(f"... {omitted} lines hidden; enlarge terminal for full view ...", "yellow", color)
+    return lines[: height - 1] + [footer]
+
+
 def _should_color() -> bool:
     if os.environ.get("NO_COLOR") or os.environ.get("ANSI_COLORS_DISABLED"):
         return False
@@ -666,5 +680,6 @@ def _should_color() -> bool:
     return bool(term and term != "dumb" and sys.stdout.isatty())
 
 
-def _terminal_width() -> int:
-    return shutil.get_terminal_size(fallback=(120, 24)).columns
+def _terminal_size() -> tuple[int, int]:
+    size = shutil.get_terminal_size(fallback=(120, 24))
+    return size.columns, size.lines

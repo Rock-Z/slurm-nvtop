@@ -48,7 +48,8 @@ only for jobs Slurm reports as GPU-backed.
 - Re-discovers Slurm jobs every refresh, so new jobs appear and ended jobs
   disappear without restarting the dashboard.
 - Redraws a single terminal view in live mode, like `nvitop`, instead of
-  appending snapshots.
+  appending snapshots. Live mode uses the terminal alternate screen and clips
+  oversized output to the terminal height to avoid scrollback artifacts.
 - Uses Unicode bars and ANSI colors by default on interactive terminals.
   Use `--color never` or `--no-unicode` for plain terminals and logs.
 - Polls nodes concurrently with per-node timeouts, so one slow or dead node does

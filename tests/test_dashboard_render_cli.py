@@ -181,6 +181,15 @@ def test_render_snapshot_uses_one_gpu_table_grouped_by_node():
     assert rendered.index("[gpu002]") > rendered.index("UTL:")
 
 
+def test_render_snapshot_respects_terminal_height():
+    snapshot = _single_gpu_snapshot(util=75, mem=50)
+
+    rendered = render_snapshot(snapshot, width=120, height=6, color=False, unicode=True)
+
+    assert len(rendered.splitlines()) == 6
+    assert "lines hidden" in rendered
+
+
 def test_render_snapshot_handles_empty_state():
     rendered = render_snapshot(ClusterSnapshot(generated_at=10), width=80)
 
