@@ -133,12 +133,12 @@ def _cluster_gpu_box(
         yield _joint_line(chars, gpu_widths, "top")
         if not labels_emitted:
             yield _row(
-                ("GPU  Name        Persistence-M", "MIG M.   Uncorr. ECC", "Memory-Usage", ""),
+                ("GPU  Name        Persistence-M", "MIG M.   Uncorr. ECC", "", ""),
                 gpu_widths,
                 chars,
             )
             yield _row(
-                ("Fan  Temp  Perf  Pwr:Usage/Cap", "", "GPU-Util  Compute M.", ""),
+                ("Fan  Temp  Perf  Pwr:Usage/Cap", "        Memory-Usage", "GPU-Util  Compute M.", ""),
                 gpu_widths,
                 chars,
             )
@@ -192,7 +192,7 @@ def _gpu_rows(
         (
             f"{gpu.index:>3}  {_gpu_name(gpu.name):<17.17} {_short(_on_off(gpu.persistence_mode), 3):>8}",
             f"{_short(gpu.mig_mode, 8):<8} {_na_int(gpu.ecc_errors):>11}",
-            f"{_mem_usage(gpu):>21}",
+            "",
             _bar_stat("MEM", mem_percent, _mem_usage_short(gpu), color=color, unicode=unicode),
         ),
         widths,
@@ -201,7 +201,7 @@ def _gpu_rows(
     yield _row(
         (
             f"{_fan(gpu):>3}  {_temp(gpu):>4} {_short(gpu.performance_state, 4):>4} {_power(gpu):>13}",
-            "",
+            f"{_mem_usage(gpu):>21}",
             f"{_percent(util):>7} {_short(gpu.compute_mode, 12):>12}",
             _bar_stat("UTL", util, f"{_percent(util):>4} @ {_clock(gpu)}", color=color, unicode=unicode),
         ),
@@ -613,8 +613,8 @@ def _gpu_box(
     yield chars["tl"] + chars["h2"] * inner + chars["tr"]
     yield _box_line(_clip_visible(title, inner), inner, chars)
     yield _joint_line(chars, (c1, c2, c3, c4), "top")
-    yield _row(("GPU  Name        Persistence-M", "MIG M.   Uncorr. ECC", "Memory-Usage", ""), (c1, c2, c3, c4), chars)
-    yield _row(("Fan  Temp  Perf  Pwr:Usage/Cap", "", "GPU-Util  Compute M.", ""), (c1, c2, c3, c4), chars)
+    yield _row(("GPU  Name        Persistence-M", "MIG M.   Uncorr. ECC", "", ""), (c1, c2, c3, c4), chars)
+    yield _row(("Fan  Temp  Perf  Pwr:Usage/Cap", "        Memory-Usage", "GPU-Util  Compute M.", ""), (c1, c2, c3, c4), chars)
     yield _joint_line(chars, (c1, c2, c3, c4), "mid_bold")
 
     if not gpus:
@@ -628,7 +628,7 @@ def _gpu_box(
             (
                 f"{gpu.index:>3}  {_gpu_name(gpu.name):<17.17} {_short(_on_off(gpu.persistence_mode), 3):>8}",
                 f"{_short(gpu.mig_mode, 8):<8} {_na_int(gpu.ecc_errors):>11}",
-                f"{_mem_usage(gpu):>21}",
+                "",
                 _bar_stat("MEM", mem_percent, _mem_usage_short(gpu), color=color, unicode=unicode),
             ),
             (c1, c2, c3, c4),
@@ -637,7 +637,7 @@ def _gpu_box(
         yield _row(
             (
                 f"{_fan(gpu):>3}  {_temp(gpu):>4} {_short(gpu.performance_state, 4):>4} {_power(gpu):>13}",
-                "",
+                f"{_mem_usage(gpu):>21}",
                 f"{_percent(util):>7} {_short(gpu.compute_mode, 12):>12}",
                 _bar_stat("UTL", util, f"{_percent(util):>4} @ {_clock(gpu)}", color=color, unicode=unicode),
             ),
