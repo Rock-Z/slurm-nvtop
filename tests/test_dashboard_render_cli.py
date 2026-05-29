@@ -121,10 +121,10 @@ def test_render_snapshot_rich_mode_has_color_graphs_averages_and_process_table()
     assert "SGTOP 0.1.0" in rendered
     assert "Driver Version" in rendered
     assert "Memory-Usage" in rendered
-    assert "GPU-Util" in rendered
+    assert "GPU-Util" not in rendered
     assert "Bus-Id" not in rendered
-    assert "A100                    On│Disabled           0  │                      │MEM:" in rendered
-    assert "N/A   60C   P0   250W / 400W   │  40000MiB / 80.00GiB │    83%      Default" in rendered
+    assert "A100                    On│Disabled           0  │MEM:" in rendered
+    assert "N/A   60C   P0   250W / 400W   │  40000MiB / 80.00GiB │UTL:" in rendered
     assert "MEM:" in rendered
     assert "UTL:" in rendered
     assert "CPU 41%" in rendered

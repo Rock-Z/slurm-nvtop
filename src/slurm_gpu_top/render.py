@@ -99,8 +99,8 @@ def _cluster_gpu_box(
     chars = _box_chars(unicode)
     w = min(width, 140)
     inner = w - 2
-    c1, c2, c3 = _gpu_col_widths(inner)
-    c4 = inner - c1 - c2 - c3 - 3
+    c1, c2 = _gpu_col_widths(inner)
+    c3 = inner - c1 - c2 - 2
     sample_host = next(
         (node.host for node in snapshot.nodes if node.host.driver_version or node.host.cuda_version),
         HostStats(),
@@ -119,7 +119,7 @@ def _cluster_gpu_box(
     yield _box_line(title, inner, chars)
     labels_emitted = False
     current_columns: tuple[int, ...] | None = None
-    gpu_widths = (c1, c2, c3, c4)
+    gpu_widths = (c1, c2, c3)
     for node in snapshot.nodes:
         if current_columns is None:
             yield chars["ml_bold"] + chars["h2"] * inner + chars["mr_bold"]
@@ -133,12 +133,12 @@ def _cluster_gpu_box(
         yield _joint_line(chars, gpu_widths, "top")
         if not labels_emitted:
             yield _row(
-                ("GPU  Name        Persistence-M", "MIG M.   Uncorr. ECC", "", ""),
+                ("GPU  Name        Persistence-M", "MIG M.   Uncorr. ECC", ""),
                 gpu_widths,
                 chars,
             )
             yield _row(
-                ("Fan  Temp  Perf  Pwr:Usage/Cap", "        Memory-Usage", "GPU-Util  Compute M.", ""),
+                ("Fan  Temp  Perf  Pwr:Usage/Cap", "        Memory-Usage", ""),
                 gpu_widths,
                 chars,
             )
@@ -170,12 +170,12 @@ def _cluster_gpu_box(
         yield _joint_line(chars, current_columns, "bottom")
 
 
-def _gpu_col_widths(inner: int) -> tuple[int, int, int]:
+def _gpu_col_widths(inner: int) -> tuple[int, int]:
     if inner >= 118:
-        return 31, 22, 22
+        return 31, 22
     if inner >= 98:
-        return 28, 19, 19
-    return 24, 16, 16
+        return 28, 19
+    return 24, 16
 
 
 def _gpu_rows(
@@ -192,8 +192,7 @@ def _gpu_rows(
         (
             f"{gpu.index:>3}  {_gpu_name(gpu.name):<17.17} {_short(_on_off(gpu.persistence_mode), 3):>8}",
             f"{_short(gpu.mig_mode, 8):<8} {_na_int(gpu.ecc_errors):>11}",
-            "",
-            _bar_stat("MEM", mem_percent, _mem_usage_short(gpu), color=color, unicode=unicode),
+            _bar_stat("MEM", mem_percent, _mem_usage_short(gpu), color=color, unicode=unicode, width=_stat_bar_width(widths[-1])),
         ),
         widths,
         chars,
@@ -202,8 +201,7 @@ def _gpu_rows(
         (
             f"{_fan(gpu):>3}  {_temp(gpu):>4} {_short(gpu.performance_state, 4):>4} {_power(gpu):>13}",
             f"{_mem_usage(gpu):>21}",
-            f"{_percent(util):>7} {_short(gpu.compute_mode, 12):>12}",
-            _bar_stat("UTL", util, f"{_percent(util):>4} @ {_clock(gpu)}", color=color, unicode=unicode),
+            _bar_stat("UTL", util, f"{_percent(util):>4} @ {_clock(gpu)}", color=color, unicode=unicode, width=_stat_bar_width(widths[-1])),
         ),
         widths,
         chars,
@@ -596,10 +594,10 @@ def _gpu_box(
     w = min(width, 120)
     inner = w - 2
     if inner >= 98:
-        c1, c2, c3 = 31, 22, 22
+        c1, c2 = 31, 22
     else:
-        c1, c2, c3 = 24, 16, 16
-    c4 = max(12, inner - c1 - c2 - c3 - 3)
+        c1, c2 = 24, 16
+    c3 = max(12, inner - c1 - c2 - 2)
     sep = chars["v"]
 
     title = (
@@ -612,39 +610,37 @@ def _gpu_box(
 
     yield chars["tl"] + chars["h2"] * inner + chars["tr"]
     yield _box_line(_clip_visible(title, inner), inner, chars)
-    yield _joint_line(chars, (c1, c2, c3, c4), "top")
-    yield _row(("GPU  Name        Persistence-M", "MIG M.   Uncorr. ECC", "", ""), (c1, c2, c3, c4), chars)
-    yield _row(("Fan  Temp  Perf  Pwr:Usage/Cap", "        Memory-Usage", "GPU-Util  Compute M.", ""), (c1, c2, c3, c4), chars)
-    yield _joint_line(chars, (c1, c2, c3, c4), "mid_bold")
+    yield _joint_line(chars, (c1, c2, c3), "top")
+    yield _row(("GPU  Name        Persistence-M", "MIG M.   Uncorr. ECC", ""), (c1, c2, c3), chars)
+    yield _row(("Fan  Temp  Perf  Pwr:Usage/Cap", "        Memory-Usage", ""), (c1, c2, c3), chars)
+    yield _joint_line(chars, (c1, c2, c3), "mid_bold")
 
     if not gpus:
         yield _box_line(_style("No GPUs reported by nvidia-smi.", "yellow", color), inner, chars)
     for idx, gpu in enumerate(sorted(gpus, key=lambda item: item.index)):
         if idx:
-            yield _joint_line(chars, (c1, c2, c3, c4), "mid")
+            yield _joint_line(chars, (c1, c2, c3), "mid")
         mem_percent = _memory_percent(gpu)
         util = gpu.gpu_util_percent
         yield _row(
             (
                 f"{gpu.index:>3}  {_gpu_name(gpu.name):<17.17} {_short(_on_off(gpu.persistence_mode), 3):>8}",
                 f"{_short(gpu.mig_mode, 8):<8} {_na_int(gpu.ecc_errors):>11}",
-                "",
-                _bar_stat("MEM", mem_percent, _mem_usage_short(gpu), color=color, unicode=unicode),
+                _bar_stat("MEM", mem_percent, _mem_usage_short(gpu), color=color, unicode=unicode, width=_stat_bar_width(c3)),
             ),
-            (c1, c2, c3, c4),
+            (c1, c2, c3),
             chars,
         )
         yield _row(
             (
                 f"{_fan(gpu):>3}  {_temp(gpu):>4} {_short(gpu.performance_state, 4):>4} {_power(gpu):>13}",
                 f"{_mem_usage(gpu):>21}",
-                f"{_percent(util):>7} {_short(gpu.compute_mode, 12):>12}",
-                _bar_stat("UTL", util, f"{_percent(util):>4} @ {_clock(gpu)}", color=color, unicode=unicode),
+                _bar_stat("UTL", util, f"{_percent(util):>4} @ {_clock(gpu)}", color=color, unicode=unicode, width=_stat_bar_width(c3)),
             ),
-            (c1, c2, c3, c4),
+            (c1, c2, c3),
             chars,
         )
-    yield _joint_line(chars, (c1, c2, c3, c4), "bottom")
+    yield _joint_line(chars, (c1, c2, c3), "bottom")
 
 
 def _host_lines(host: HostStats, *, width: int, color: bool, unicode: bool) -> Iterable[str]:
@@ -706,9 +702,21 @@ def _format_jobs(jobs: Iterable[SlurmJob]) -> str:
     return ", ".join(parts) if parts else "unknown"
 
 
-def _bar_stat(label: str, percent: Optional[float], suffix: str, *, color: bool, unicode: bool) -> str:
-    bar = _fraction_bar(percent, width=8, color=color, unicode=unicode)
+def _bar_stat(
+    label: str,
+    percent: Optional[float],
+    suffix: str,
+    *,
+    color: bool,
+    unicode: bool,
+    width: int = 8,
+) -> str:
+    bar = _fraction_bar(percent, width=width, color=color, unicode=unicode)
     return f"{label}: {bar} {suffix}"
+
+
+def _stat_bar_width(column_width: int) -> int:
+    return max(8, min(28, column_width - 24))
 
 
 def _host_bar(label: str, percent: Optional[float], width: int, *, color: bool, unicode: bool) -> str:
