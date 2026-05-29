@@ -7,13 +7,13 @@ import sys
 import time
 from typing import Iterable, Optional, Sequence
 
-from .models import ClusterSnapshot, GPUDevice, GPUProcess, NodeSnapshot, SlurmJob
+from .models import ClusterSnapshot, GPUDevice, GPUProcess, HostStats, NodeSnapshot, SlurmJob
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 RESET = "\033[0m"
 COLORS = {
-    "dim": "\033[2m",
     "bold": "\033[1m",
+    "dim": "\033[2m",
     "red": "\033[31m",
     "green": "\033[32m",
     "yellow": "\033[33m",
@@ -25,12 +25,9 @@ COLORS = {
     "bright_red": "\033[91m",
     "bright_green": "\033[92m",
     "bright_yellow": "\033[93m",
-    "bright_blue": "\033[94m",
-    "bright_magenta": "\033[95m",
     "bright_cyan": "\033[96m",
 }
-SPARKLINE = "▁▂▃▄▅▆▇█"
-ASCII_SPARKLINE = "._:-=+*#"
+PARTIALS = "▏▎▍▌▋▊▉"
 
 
 def render_snapshot(
@@ -42,305 +39,409 @@ def render_snapshot(
     all_gpu_history: Sequence[Optional[int]] = (),
     gpu_histories: Optional[dict[tuple[str, str], Sequence[Optional[int]]]] = None,
 ) -> str:
-    width = width or _terminal_width()
+    del all_gpu_history, gpu_histories
+    width = max(79, width or _terminal_width())
     color = _should_color() if color is None else color
-    gpu_histories = gpu_histories or {}
     gpus = _all_gpus(snapshot)
-    avg_util = _avg([gpu.gpu_util_percent for gpu in gpus])
-    avg_mem = _avg([gpu.mem_util_percent for gpu in gpus])
-    process_count = sum(len(gpu.processes) for gpu in gpus)
+    avg_util = _avg(gpu.gpu_util_percent for gpu in gpus)
+    avg_mem = _avg(gpu.mem_util_percent for gpu in gpus)
+
     lines = [
+        time.strftime("%a %b %d %H:%M:%S %Y", time.localtime(snapshot.generated_at)),
         _clip(
-            _style("slurm-gpu-top", "bold", color)
+            _style("SLURM-GPU-TOP", "bold", color)
             + "  "
-            f"{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(snapshot.generated_at))}  "
             + _style(
-                f"jobs={snapshot.job_count} nodes={len(snapshot.nodes)} "
-                f"gpus={snapshot.gpu_count} procs={process_count}",
+                f"ALL GPUs util={_percent(avg_util)} mem={_percent(avg_mem)} "
+                f"jobs={snapshot.job_count} nodes={len(snapshot.nodes)} gpus={snapshot.gpu_count}",
                 "cyan",
                 color,
             ),
             width,
         ),
-        _rule(width, "═" if unicode else "=", color),
     ]
 
     if snapshot.errors:
-        lines.extend(
-            _clip(_style(f"Slurm error: {error}", "bright_red", color), width)
-            for error in snapshot.errors
-        )
+        lines.extend(_style(f"Slurm error: {error}", "bright_red", color) for error in snapshot.errors)
         return "\n".join(lines)
 
     if not snapshot.nodes:
         lines.append(_style("No running GPU-backed Slurm jobs found.", "yellow", color))
         return "\n".join(lines)
 
-    graph_width = max(12, min(48, width - 42))
-    all_history = tuple(all_gpu_history) or (avg_util,)
-    lines.extend(
-        _render_cluster_summary(
-            avg_util=avg_util,
-            avg_mem=avg_mem,
-            graph=_sparkline(all_history, graph_width, unicode=unicode),
-            color=color,
-            width=width,
-        )
-    )
-
     for node in snapshot.nodes:
-        lines.extend(_render_node(node, width, color=color, unicode=unicode, gpu_histories=gpu_histories))
-    lines.extend(_render_process_table(snapshot, width, color=color, unicode=unicode))
+        lines.append("")
+        lines.extend(_render_node(node, width=width, color=color, unicode=unicode))
     return "\n".join(lines)
 
 
-def _render_cluster_summary(
-    *,
-    avg_util: Optional[int],
-    avg_mem: Optional[int],
-    graph: str,
-    color: bool,
-    width: int,
-) -> Iterable[str]:
-    util_color = _util_color(avg_util)
-    prefix = (
-        "ALL GPUs  "
-        + _style(f"avg util {_percent(avg_util).strip():>4}", util_color, color)
-        + "  "
-        + _style(f"avg mem {_percent(avg_mem).strip():>4}", _util_color(avg_mem, memory=True), color)
+def _render_node(node: NodeSnapshot, *, width: int, color: bool, unicode: bool) -> Iterable[str]:
+    host = node.host
+    title_host = host.hostname or node.node
+    yield _clip(
+        _style(f"[{node.node}]", "bright_cyan", color)
+        + " "
+        + _style(_format_jobs(node.jobs), "yellow", color),
+        width,
     )
-    graph_text = "  util history " + _style(graph, util_color, color)
-    if _visible_len(prefix + graph_text) <= width:
-        yield _clip(prefix + graph_text, width)
-        return
-    yield _clip(prefix, width)
-    yield _clip("  util history " + _style(graph.strip() or graph, util_color, color), width)
 
-
-def _render_node(
-    node: NodeSnapshot,
-    width: int,
-    *,
-    color: bool,
-    unicode: bool,
-    gpu_histories: dict[tuple[str, str], Sequence[Optional[int]]],
-) -> Iterable[str]:
-    yield ""
-    node_avg = _avg([gpu.gpu_util_percent for gpu in node.gpus])
-    node_title = (
-        _style(node.node, "bright_cyan", color)
-        + "  "
-        + _style(f"avg {_percent(node_avg).strip():>4}", _util_color(node_avg), color)
-        + "  jobs: "
-        + _format_jobs(node.jobs, color=color)
-    )
-    yield _clip(node_title, width)
-    yield _rule(width, "─" if unicode else "-", color)
     if node.error:
-        yield _clip("  " + _style(f"! {node.error}", "bright_red", color), width)
-        return
-    if not node.gpus:
-        yield _style("  No GPUs reported by nvidia-smi.", "yellow", color)
+        yield from _simple_box([_style(f"! {node.error}", "bright_red", color)], width, unicode=unicode)
         return
 
-    compact = width < 110
-    graph_width = max(8, min(16, width - 104)) if not compact else max(12, min(36, width - 20))
-    header = (
-        "  GPU  UTIL      MEM           TEMP       POWER"
-        if compact
-        else "  GPU  UTIL      MEM           TEMP       POWER       NAME                         HISTORY"
-    )
-    yield _style(_clip(header, width), "bright_black", color)
-    for gpu in sorted(node.gpus, key=lambda item: item.index):
-        history = gpu_histories.get(_gpu_key(gpu), (gpu.gpu_util_percent,))
-        yield _clip(
-            _format_gpu(
-                gpu,
-                history,
-                graph_width=graph_width,
-                color=color,
-                unicode=unicode,
-                show_history=not compact,
-            ),
-            width,
-        )
-        if compact:
-            graph = _style(
-                _sparkline(history, graph_width, unicode=unicode).strip() or "?",
-                _util_color(gpu.gpu_util_percent),
-                color,
-            )
-            yield _clip(f"       {gpu.name[:24]:<24} history {graph}", width)
-        if gpu.processes:
-            for proc in sorted(gpu.processes, key=lambda item: item.pid):
-                yield _clip(_format_process(proc, color=color), width)
-        else:
-            yield _clip(_style("       no running GPU compute processes", "bright_black", color), width)
+    yield from _gpu_box(node.gpus, host, width=width, color=color, unicode=unicode)
+    yield from _host_lines(host, width=width, color=color, unicode=unicode)
+    yield ""
+    yield from _process_box(node, title_host, width=width, color=color, unicode=unicode)
 
 
-def _render_process_table(
-    snapshot: ClusterSnapshot,
-    width: int,
+def _gpu_box(
+    gpus: Sequence[GPUDevice],
+    host: HostStats,
     *,
+    width: int,
     color: bool,
     unicode: bool,
 ) -> Iterable[str]:
-    rows = []
-    for node in snapshot.nodes:
-        for gpu in node.gpus:
-            for proc in gpu.processes:
-                rows.append((node, gpu, proc))
+    chars = _box_chars(unicode)
+    w = min(width, 120)
+    inner = w - 2
+    if inner >= 98:
+        c1, c2, c3 = 31, 22, 22
+    else:
+        c1, c2, c3 = 24, 16, 16
+    c4 = max(12, inner - c1 - c2 - c3 - 3)
+    sep = chars["v"]
 
-    yield ""
-    yield _clip(_style("Processes", "bold", color), width)
-    yield _rule(width, "─" if unicode else "-", color)
+    title = (
+        _style("NVITOP", "bold", color)
+        + " "
+        + _style("1.6.2-like", "green", color)
+        + f"      Driver Version: {host.driver_version or 'N/A'}"
+        + f"      CUDA Driver Version: {host.cuda_version or 'N/A'}"
+    )
+
+    yield chars["tl"] + chars["h2"] * inner + chars["tr"]
+    yield _box_line(_clip_visible(title, inner), inner, chars)
+    yield _joint_line(chars, (c1, c2, c3, c4), "top")
+    yield _row(("GPU  Name        Persistence-M", "Bus-Id        Disp.A", "MIG M.   Uncorr. ECC", ""), (c1, c2, c3, c4), chars)
+    yield _row(("Fan  Temp  Perf  Pwr:Usage/Cap", "        Memory-Usage", "GPU-Util  Compute M.", ""), (c1, c2, c3, c4), chars)
+    yield _joint_line(chars, (c1, c2, c3, c4), "mid_bold")
+
+    if not gpus:
+        yield _box_line(_style("No GPUs reported by nvidia-smi.", "yellow", color), inner, chars)
+    for idx, gpu in enumerate(sorted(gpus, key=lambda item: item.index)):
+        if idx:
+            yield _joint_line(chars, (c1, c2, c3, c4), "mid")
+        mem_percent = _memory_percent(gpu)
+        util = gpu.gpu_util_percent
+        yield _row(
+            (
+                f"{gpu.index:>3}  {_gpu_name(gpu.name):<17.17} {_short(_on_off(gpu.persistence_mode), 3):>8}",
+                f"{_short(gpu.pci_bus_id, 16):<16} {_short(_on_off(gpu.display_active), 3):>3}",
+                f"{_short(gpu.mig_mode, 8):<8} {_na_int(gpu.ecc_errors):>11}",
+                _bar_stat("MEM", mem_percent, _mem_usage_short(gpu), color=color, unicode=unicode),
+            ),
+            (c1, c2, c3, c4),
+            chars,
+        )
+        yield _row(
+            (
+                f"{_fan(gpu):>3}  {_temp(gpu):>4} {_short(gpu.performance_state, 4):>4} {_power(gpu):>13}",
+                f"{_mem_usage(gpu):>21}",
+                f"{_percent(util):>7} {_short(gpu.compute_mode, 12):>12}",
+                _bar_stat("UTL", util, f"{_percent(util):>4} @ {_clock(gpu)}", color=color, unicode=unicode),
+            ),
+            (c1, c2, c3, c4),
+            chars,
+        )
+    yield _joint_line(chars, (c1, c2, c3, c4), "bottom")
+
+
+def _host_lines(host: HostStats, *, width: int, color: bool, unicode: bool) -> Iterable[str]:
+    cpu = _host_bar("CPU", host.cpu_percent, 24, color=color, unicode=unicode)
+    uptime = _uptime(host.uptime_seconds)
+    loads = " ".join(f"{value:.2f}" for value in host.load_average) or "N/A"
+    yield _clip(f"[ {cpu:<44} UPTIME: {uptime:>10} ]  ( Load Average: {loads} )", width)
+
+    mem = _host_bar("MEM", host.memory_percent, 10, color=color, unicode=unicode)
+    mem_used = _human_mib(host.memory_used_mib)
+    swp = _host_bar("SWP", host.swap_percent, 10, color=color, unicode=unicode)
+    yield _clip(f"[ {mem:<50} USED: {mem_used:>9} ]  [ {swp:<28} ]", width)
+
+
+def _process_box(
+    node: NodeSnapshot,
+    title_host: str,
+    *,
+    width: int,
+    color: bool,
+    unicode: bool,
+) -> Iterable[str]:
+    chars = _box_chars(unicode)
+    w = min(width, 120)
+    inner = w - 2
+    rows = [(gpu, proc) for gpu in sorted(node.gpus, key=lambda item: item.index) for proc in gpu.processes]
+
+    yield chars["tl"] + chars["h2"] * inner + chars["tr"]
+    yield _box_line(
+        _fit_right("Processes:", f"{_user_hint(rows)}@{title_host}", inner),
+        inner,
+        chars,
+    )
+    yield _box_line("GPU     PID      USER  GPU-MEM %SM %GMBW  %CPU  %MEM     TIME  COMMAND", inner, chars)
+    yield chars["ml_bold"] + chars["h2"] * inner + chars["mr_bold"]
     if not rows:
-        yield _style("  No running GPU compute processes found.", "bright_black", color)
-        return
-
-    yield _style("  NODE          GPU  PID       GPU MEM     PROCESS", "bright_black", color)
-    for node, gpu, proc in sorted(rows, key=lambda item: (item[0].node, item[1].index, item[2].pid)):
-        mem = _value(proc.used_memory_mib, "MiB")
-        yield _clip(
-            f"  {node.node:<12}  {gpu.index:<3}  {proc.pid:<8}  {mem:>9}   {proc.name}",
-            width,
-        )
+        yield _box_line(_style("No running GPU compute processes found.", "bright_black", color), inner, chars)
+    for idx, (gpu, proc) in enumerate(rows):
+        if idx:
+            yield chars["ml"] + chars["h1"] * inner + chars["mr"]
+        yield _box_line(_format_process_row(gpu, proc, inner), inner, chars)
+    yield chars["bl"] + chars["h2"] * inner + chars["br"]
 
 
-def _format_jobs(jobs: Iterable[SlurmJob], *, color: bool) -> str:
-    parts = []
-    for job in jobs:
-        label = (
-            _style(job.job_id, "yellow", color)
-            + f" {job.user}/{job.name} {job.elapsed}"
-        )
-        parts.append(label)
+def _format_process_row(gpu: GPUDevice, proc: GPUProcess, width: int) -> str:
+    command = proc.command or proc.name
+    fixed = (
+        f"{gpu.index:>3}  {proc.pid:>6} {_short(proc.type, 3):<3} "
+        f"{_short(proc.user, 5):<5} {_value(proc.used_memory_mib, 'MiB'):>8} "
+        f"{_na_int(proc.sm_util_percent):>3} {_na_int(proc.mem_bw_util_percent):>5} "
+        f"{_na_float(proc.cpu_percent):>5} {_na_float(proc.mem_percent):>5} "
+        f"{(proc.elapsed or 'N/A'):>8}  "
+    )
+    return fixed + _clip_visible(command, max(0, width - _visible_len(fixed)))
+
+
+def _format_jobs(jobs: Iterable[SlurmJob]) -> str:
+    parts = [f"{job.job_id} {job.user}/{job.name} {job.elapsed}" for job in jobs]
     return ", ".join(parts) if parts else "unknown"
 
 
-def _format_gpu(
-    gpu: GPUDevice,
-    history: Sequence[Optional[int]],
-    *,
-    graph_width: int,
-    color: bool,
-    unicode: bool,
-    show_history: bool,
-) -> str:
-    util_color = _util_color(gpu.gpu_util_percent)
-    mem_color = _util_color(gpu.mem_util_percent, memory=True)
-    util = _style(_percent(gpu.gpu_util_percent), util_color, color)
-    mem_util = _style(_percent(gpu.mem_util_percent), mem_color, color)
-    mem = _memory(gpu.mem_used_mib, gpu.mem_total_mib)
-    temp = _value(gpu.temperature_c, "C")
-    power = _power(gpu.power_draw_w, gpu.power_limit_w)
-    bar = _bar(gpu.gpu_util_percent, color=color, unicode=unicode)
-    line = (
-        f"  {gpu.index:<3}  {util:>5} {bar}  {mem_util:>5} {mem:>15}  "
-        f"{temp:>7}  {power:>11}"
-    )
-    if show_history:
-        graph = _style(_sparkline(history, graph_width, unicode=unicode), util_color, color)
-        line += f"  {gpu.name[:22]:<22} {graph}"
-    return line
+def _bar_stat(label: str, percent: Optional[float], suffix: str, *, color: bool, unicode: bool) -> str:
+    bar = _fraction_bar(percent, width=8, color=color, unicode=unicode)
+    return f"{label}: {bar} {suffix}"
 
 
-def _format_process(proc: GPUProcess, *, color: bool) -> str:
-    mem = _value(proc.used_memory_mib, "MiB")
+def _host_bar(label: str, percent: Optional[float], width: int, *, color: bool, unicode: bool) -> str:
+    return f"{label}: {_fraction_bar(percent, width=width, color=color, unicode=unicode)} {_percent(percent):>5}"
+
+
+def _fraction_bar(percent: Optional[float], *, width: int, color: bool, unicode: bool) -> str:
+    if percent is None:
+        raw = "?" * width
+        return _style(raw, "bright_black", color)
+    percent = max(0.0, min(100.0, float(percent)))
+    if not unicode:
+        full = round(width * percent / 100)
+        return _style("#" * full, _util_color(percent), color) + _style("." * (width - full), "bright_black", color)
+    units = percent / 100 * width
+    full = int(units)
+    remainder = units - full
+    partial = ""
+    if full < width and remainder > 0:
+        partial = PARTIALS[min(len(PARTIALS) - 1, max(0, int(remainder * len(PARTIALS))))]
+    empty = max(0, width - full - (1 if partial else 0))
     return (
-        "       "
-        + _style(f"pid={proc.pid:<7}", "bright_black", color)
-        + f" mem={mem:>9}  {proc.name}"
+        _style("█" * full + partial, _util_color(percent), color)
+        + _style(" " * empty, "bright_black", color)
     )
 
 
-def _percent(value: Optional[int]) -> str:
-    return "  N/A" if value is None else f"{value:>3}%"
+def _row(values: Sequence[str], widths: Sequence[int], chars: dict[str, str]) -> str:
+    return chars["v"] + chars["v"].join(_pad(value, width) for value, width in zip(values, widths)) + chars["v"]
 
 
-def _memory(used: Optional[int], total: Optional[int]) -> str:
-    if used is None or total is None:
+def _box_line(value: str, width: int, chars: dict[str, str]) -> str:
+    return chars["v"] + _pad(value, width) + chars["v"]
+
+
+def _joint_line(chars: dict[str, str], widths: Sequence[int], kind: str) -> str:
+    if kind == "top":
+        left, joint, right, fill = chars["lt"], chars["tj"], chars["rt"], chars["h1"]
+    elif kind == "mid":
+        left, joint, right, fill = chars["ml"], chars["mj"], chars["mr"], chars["h1"]
+    elif kind == "mid_bold":
+        left, joint, right, fill = chars["ml_bold"], chars["mj_bold"], chars["mr_bold"], chars["h2"]
+    elif kind == "bottom":
+        left, joint, right, fill = chars["bl"], chars["bj"], chars["br"], chars["h2"]
+    else:
+        left, joint, right, fill = chars["ml"], chars["mj"], chars["mr"], chars["h1"]
+    return left + joint.join(fill * width for width in widths) + right
+
+
+def _simple_box(lines: Sequence[str], width: int, *, unicode: bool) -> Iterable[str]:
+    chars = _box_chars(unicode)
+    inner = min(width, 120) - 2
+    yield chars["tl"] + chars["h2"] * inner + chars["tr"]
+    for line in lines:
+        yield _box_line(_clip_visible(line, inner), inner, chars)
+    yield chars["bl"] + chars["h2"] * inner + chars["br"]
+
+
+def _box_chars(unicode: bool) -> dict[str, str]:
+    if not unicode:
+        return {
+            "tl": "+",
+            "tr": "+",
+            "bl": "+",
+            "br": "+",
+            "lt": "+",
+            "rt": "+",
+            "ml": "+",
+            "mr": "+",
+            "ml_bold": "+",
+            "mr_bold": "+",
+            "tj": "+",
+            "mj": "+",
+            "mj_bold": "+",
+            "bj": "+",
+            "v": "|",
+            "h1": "-",
+            "h2": "=",
+        }
+    return {
+        "tl": "╒",
+        "tr": "╕",
+        "bl": "╘",
+        "br": "╛",
+        "lt": "├",
+        "rt": "┤",
+        "ml": "├",
+        "mr": "┤",
+        "ml_bold": "╞",
+        "mr_bold": "╡",
+        "tj": "┬",
+        "mj": "┼",
+        "mj_bold": "╪",
+        "bj": "╧",
+        "v": "│",
+        "h1": "─",
+        "h2": "═",
+    }
+
+
+def _gpu_name(name: str) -> str:
+    return name.replace("NVIDIA ", "").replace("SXM4-", "").strip()
+
+
+def _on_off(value: str) -> str:
+    normalized = value.strip().lower()
+    if normalized in {"enabled", "enable", "active", "yes", "on"}:
+        return "On"
+    if normalized in {"disabled", "disable", "inactive", "no", "off"}:
+        return "Off"
+    return value
+
+
+def _memory_percent(gpu: GPUDevice) -> Optional[float]:
+    if gpu.mem_used_mib is None or not gpu.mem_total_mib:
+        return gpu.mem_util_percent
+    return 100 * gpu.mem_used_mib / gpu.mem_total_mib
+
+
+def _mem_usage(gpu: GPUDevice) -> str:
+    if gpu.mem_used_mib is None or gpu.mem_total_mib is None:
         return "N/A"
-    return f"{used}/{total} MiB"
+    return f"{gpu.mem_used_mib}MiB / {_human_mib(gpu.mem_total_mib)}"
 
 
-def _power(draw: Optional[float], limit: Optional[float]) -> str:
-    if draw is None and limit is None:
+def _mem_usage_short(gpu: GPUDevice) -> str:
+    percent = _memory_percent(gpu)
+    if gpu.mem_used_mib is None:
+        return f"N/A {_percent(percent):>7}"
+    return f"{gpu.mem_used_mib}MiB {_percent(percent):>7}"
+
+
+def _human_mib(mib: Optional[int]) -> str:
+    if mib is None:
         return "N/A"
-    if limit is None:
-        return f"{draw:.0f}W"
-    if draw is None:
-        return f"N/A/{limit:.0f}W"
-    return f"{draw:.0f}/{limit:.0f}W"
+    if mib >= 1024:
+        return f"{mib / 1024:.2f}GiB"
+    return f"{mib}MiB"
+
+
+def _fan(gpu: GPUDevice) -> str:
+    return "N/A" if gpu.fan_speed_percent is None else f"{gpu.fan_speed_percent}%"
+
+
+def _temp(gpu: GPUDevice) -> str:
+    return "N/A" if gpu.temperature_c is None else f"{gpu.temperature_c}C"
+
+
+def _power(gpu: GPUDevice) -> str:
+    if gpu.power_draw_w is None and gpu.power_limit_w is None:
+        return "N/A"
+    if gpu.power_limit_w is None:
+        return f"{gpu.power_draw_w:.0f}W"
+    if gpu.power_draw_w is None:
+        return f"N/A / {gpu.power_limit_w:.0f}W"
+    return f"{gpu.power_draw_w:.0f}W / {gpu.power_limit_w:.0f}W"
+
+
+def _clock(gpu: GPUDevice) -> str:
+    return "N/A" if gpu.sm_clock_mhz is None else f"{gpu.sm_clock_mhz}MHz"
+
+
+def _uptime(seconds: Optional[float]) -> str:
+    if seconds is None:
+        return "N/A"
+    days = seconds / 86400
+    if days >= 1:
+        return f"{days:.1f} days"
+    hours = seconds / 3600
+    return f"{hours:.1f} hours"
+
+
+def _percent(value: Optional[float]) -> str:
+    return "N/A" if value is None else f"{value:.0f}%"
 
 
 def _value(value: object, unit: str) -> str:
     return "N/A" if value is None else f"{value}{unit}"
 
 
-def _bar(
-    value: Optional[int],
-    *,
-    width: int = 12,
-    color: bool = False,
-    unicode: bool = True,
-) -> str:
-    if value is None:
-        return "[" + _style("?" * width, "bright_black", color) + "]"
-    filled = max(0, min(width, round(width * value / 100)))
-    fill_char = "█" if unicode else "#"
-    empty_char = "░" if unicode else "."
-    return (
-        "["
-        + _style(fill_char * filled, _util_color(value), color)
-        + _style(empty_char * (width - filled), "bright_black", color)
-        + "]"
-    )
+def _na_int(value: Optional[int]) -> str:
+    return "N/A" if value is None else str(value)
 
 
-def _sparkline(
-    values: Sequence[Optional[int]],
-    width: int,
-    *,
-    unicode: bool,
-) -> str:
-    symbols = SPARKLINE if unicode else ASCII_SPARKLINE
-    usable = [value for value in values if value is not None]
-    if not usable:
-        return "?" * width
-    padded: list[Optional[int]] = [None] * max(0, width - len(values)) + list(values[-width:])
-    chars = []
-    for value in padded:
-        if value is None:
-            chars.append(" ")
-            continue
-        idx = round(max(0, min(100, value)) / 100 * (len(symbols) - 1))
-        chars.append(symbols[idx])
-    return "".join(chars)
+def _na_float(value: Optional[float]) -> str:
+    return "N/A" if value is None else f"{value:.1f}"
 
 
-def _avg(values: Iterable[Optional[int]]) -> Optional[int]:
-    valid = [value for value in values if value is not None]
-    if not valid:
-        return None
-    return round(sum(valid) / len(valid))
+def _short(value: object, width: int) -> str:
+    text = "N/A" if value is None or str(value) == "" else str(value)
+    return _clip_visible(text, width)
+
+
+def _fit_right(left: str, right: str, width: int) -> str:
+    gap = max(1, width - _visible_len(left) - _visible_len(right))
+    return left + " " * gap + right
+
+
+def _user_hint(rows: Sequence[tuple[GPUDevice, GPUProcess]]) -> str:
+    for _gpu, proc in rows:
+        if proc.user:
+            return proc.user
+    return os.environ.get("USER", "user")
 
 
 def _all_gpus(snapshot: ClusterSnapshot) -> list[GPUDevice]:
     return [gpu for node in snapshot.nodes for gpu in node.gpus]
 
 
-def _gpu_key(gpu: GPUDevice) -> tuple[str, str]:
-    return (gpu.node, gpu.uuid or str(gpu.index))
+def _avg(values: Iterable[Optional[float]]) -> Optional[float]:
+    valid = [value for value in values if value is not None]
+    if not valid:
+        return None
+    return sum(valid) / len(valid)
 
 
-def _util_color(value: Optional[int], *, memory: bool = False) -> str:
+def _util_color(value: Optional[float]) -> str:
     if value is None:
         return "yellow"
-    moderate, heavy = (10, 80) if memory else (10, 75)
-    if value >= heavy:
+    if value >= 75:
         return "bright_red"
-    if value >= moderate:
+    if value >= 10:
         return "bright_yellow"
     return "bright_green"
 
@@ -349,37 +450,43 @@ def _style(text: object, color_name: str, enabled: bool) -> str:
     text = str(text)
     if not enabled:
         return text
-    codes = []
-    if color_name == "bold":
-        codes.append(COLORS["bold"])
-    else:
-        codes.append(COLORS.get(color_name, ""))
-    prefix = "".join(codes)
-    return f"{prefix}{text}{RESET}" if prefix else text
+    code = COLORS.get(color_name, "")
+    return f"{code}{text}{RESET}" if code else text
 
 
-def _rule(width: int, char: str, color: bool) -> str:
-    return _style(char * min(width, 120), "bright_black", color)
+def _pad(text: str, width: int) -> str:
+    text = _clip_visible(text, width)
+    return text + " " * max(0, width - _visible_len(text))
 
 
 def _clip(text: str, width: int) -> str:
     if width <= 1 or _visible_len(text) <= width:
         return text
+    return _clip_visible(text, width - 1) + "…"
+
+
+def _clip_visible(text: str, width: int) -> str:
+    if width <= 0:
+        return ""
+    if _visible_len(text) <= width:
+        return text
     out = []
     visible = 0
     idx = 0
-    while idx < len(text) and visible < width - 1:
+    had_ansi = False
+    while idx < len(text) and visible < width:
         match = ANSI_RE.match(text, idx)
         if match:
+            had_ansi = True
             out.append(match.group(0))
             idx = match.end()
             continue
         out.append(text[idx])
         visible += 1
         idx += 1
-    if ANSI_RE.search("".join(out)):
+    if had_ansi:
         out.append(RESET)
-    return "".join(out) + "…"
+    return "".join(out)
 
 
 def _visible_len(text: str) -> int:

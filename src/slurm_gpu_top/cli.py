@@ -13,6 +13,7 @@ from .models import (
     ClusterSnapshot,
     GPUDevice,
     GPUProcess,
+    HostStats,
     NodeSnapshot,
     SlurmJob,
     SnapshotBuilderConfig,
@@ -125,6 +126,7 @@ def _load_mock_snapshot(path: str) -> ClusterSnapshot:
                 node=node_data["node"],
                 jobs=jobs,
                 gpus=tuple(gpus),
+                host=HostStats(**node_data.get("host", {})),
                 error=node_data.get("error"),
             )
         )

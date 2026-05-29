@@ -1,4 +1,4 @@
-from slurm_gpu_top.gpu import PROCESS_MARKER, parse_nvidia_smi_output, poll_node_gpus
+from slurm_gpu_top.gpu import PROCESS_MARKER, parse_node_probe_output, parse_nvidia_smi_output, poll_node_gpus
 from slurm_gpu_top.models import CommandResult
 
 
@@ -29,6 +29,50 @@ def test_parse_nvidia_smi_output_accepts_na_values():
     assert gpu.temperature_c is None
     assert gpu.power_draw_w is None
     assert gpu.power_limit_w == 350.0
+
+
+def test_parse_node_probe_output_with_nvitop_style_stats():
+    output = (
+        "__SLURM_GPU_TOP_META__\n"
+        "hostname=gpu001.example\n"
+        "driver_version=570.195.03\n"
+        "cuda_version=12.8\n"
+        "uptime_seconds=1572480\n"
+        "load_average=23.42 21.24 20.95\n"
+        "memory=113971 1032192 11.0\n"
+        "swap=0 8192 0.0\n"
+        "cpu_percent=41.1\n"
+        "__SLURM_GPU_TOP_GPUS__\n"
+        "0, GPU-aaa, NVIDIA H100 80GB HBM3, On, 00000000:55:00.0, Off, Disabled, 0, N/A, 36, P0, 138, 700, 9723, 81559, 10, 2, Default, 1980\n"
+        "__SLURM_GPU_TOP_PROCESSES__\n"
+        "514876, python train.py, 9710, GPU-aaa\n"
+        "__SLURM_GPU_TOP_PMON__\n"
+        "# gpu pid type sm mem enc dec command\n"
+        "0 514876 C 6 2 - - python\n"
+        "__SLURM_GPU_TOP_PS__\n"
+        "514876 ez275 595.5 1.1 2:13:03 /path/train.py\n"
+    )
+
+    gpus, host = parse_node_probe_output("gpu001", output)
+
+    assert host.hostname == "gpu001.example"
+    assert host.driver_version == "570.195.03"
+    assert host.cuda_version == "12.8"
+    assert host.cpu_percent == 41.1
+    assert host.load_average == (23.42, 21.24, 20.95)
+    gpu = gpus[0]
+    assert gpu.persistence_mode == "On"
+    assert gpu.pci_bus_id == "00000000:55:00.0"
+    assert gpu.mig_mode == "Disabled"
+    assert gpu.performance_state == "P0"
+    assert gpu.compute_mode == "Default"
+    assert gpu.sm_clock_mhz == 1980
+    proc = gpu.processes[0]
+    assert proc.user == "ez275"
+    assert proc.cpu_percent == 595.5
+    assert proc.sm_util_percent == 6
+    assert proc.mem_bw_util_percent == 2
+    assert proc.command == "/path/train.py"
 
 
 def test_parse_nvidia_smi_output_rejects_malformed_gpu_rows():

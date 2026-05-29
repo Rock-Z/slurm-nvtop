@@ -5,8 +5,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, Iterable, List, Tuple
 
 from .commands import CommandRunner, run_command
-from .gpu import poll_node_gpus
-from .models import ClusterSnapshot, NodeSnapshot, SlurmJob, SnapshotBuilderConfig
+from .gpu import poll_node
+from .models import ClusterSnapshot, HostStats, NodeSnapshot, SlurmJob, SnapshotBuilderConfig
 from .slurm import SlurmError, discover_gpu_jobs
 
 
@@ -35,7 +35,7 @@ def build_snapshot(
     with ThreadPoolExecutor(max_workers=workers) as executor:
         futures = {
             executor.submit(
-                poll_node_gpus,
+                poll_node,
                 node,
                 ssh_options=config.ssh_options,
                 runner=runner,
@@ -46,13 +46,14 @@ def build_snapshot(
         for future in as_completed(futures):
             node = futures[future]
             try:
-                gpus, error = future.result()
+                gpus, host, error = future.result()
             except Exception as exc:  # defensive: keep the dashboard alive
-                gpus, error = (), str(exc)
+                gpus, host, error = (), HostStats(hostname=node), str(exc)
             snapshots[node] = NodeSnapshot(
                 node=node,
                 jobs=tuple(sorted(jobs_by_node[node], key=lambda job: job.job_id)),
                 gpus=gpus,
+                host=host,
                 error=error,
             )
 

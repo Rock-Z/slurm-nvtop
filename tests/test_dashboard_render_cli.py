@@ -88,8 +88,8 @@ def test_render_snapshot_groups_by_node_and_lists_processes():
 
     assert "gpu001" in rendered
     assert "101 ez275/train" in rendered
-    assert "NVIDIA A100" in rendered
-    assert "pid=1234" in rendered
+    assert "A100" in rendered
+    assert "1234" in rendered
 
 
 def test_render_snapshot_rich_mode_has_color_graphs_averages_and_process_table():
@@ -109,8 +109,14 @@ def test_render_snapshot_rich_mode_has_color_graphs_averages_and_process_table()
 
     assert "\x1b[" in rendered
     assert "ALL GPUs" in rendered
-    assert "avg util" in rendered
-    assert "▁" in rendered or "▂" in rendered or "▃" in rendered or "▄" in rendered
+    assert "NVITOP" in rendered
+    assert "Driver Version" in rendered
+    assert "Memory-Usage" in rendered
+    assert "GPU-Util" in rendered
+    assert "MEM:" in rendered
+    assert "UTL:" in rendered
+    assert "CPU:" in rendered
+    assert "SWP:" in rendered
     assert "Processes" in rendered
     assert "python train.py" in rendered
 
@@ -127,8 +133,10 @@ def test_render_snapshot_ascii_fallback_keeps_graph_visible():
     )
 
     assert "\x1b[" not in rendered
-    assert "util history" in rendered
-    assert "*" in rendered or "+" in rendered or "#" in rendered
+    assert "NVITOP" in rendered
+    assert "MEM:" in rendered
+    assert "UTL:" in rendered
+    assert "#" in rendered
     assert "█" not in rendered
     assert "░" not in rendered
     assert "Processes" in rendered
@@ -145,9 +153,10 @@ def test_render_snapshot_compact_width_keeps_history_graph_visible():
         gpu_histories={("gpu001", "GPU-a"): (0, 25, 50, 75)},
     )
 
-    assert "util history" in rendered
-    assert "history ▁▃▅▆" in rendered or "history ▁▃▄▆" in rendered
-    assert "NVIDIA A100" in rendered
+    assert "NVITOP" in rendered
+    assert "MEM:" in rendered
+    assert "UTL:" in rendered
+    assert "A100" in rendered
 
 
 def test_render_snapshot_handles_empty_state():
@@ -180,9 +189,24 @@ def _single_gpu_runner(*, util: int, mem: int):
             return CommandResult(
                 command,
                 0,
-                f"0, GPU-a, NVIDIA A100, {util}, {mem}, 40000, 81920, 60, 250, 400\n"
+                "__SLURM_GPU_TOP_META__\n"
+                "hostname=gpu001.example\n"
+                "driver_version=570.195.03\n"
+                "cuda_version=12.8\n"
+                "uptime_seconds=1572480\n"
+                "load_average=1.00 2.00 3.00\n"
+                "memory=1024 8192 12.5\n"
+                "swap=0 4096 0.0\n"
+                "cpu_percent=41.1\n"
+                "__SLURM_GPU_TOP_GPUS__\n"
+                f"0, GPU-a, NVIDIA A100, On, 00000000:55:00.0, Off, Disabled, 0, N/A, 60, P0, 250, 400, 40000, 81920, {util}, {mem}, Default, 1980\n"
                 "__SLURM_GPU_TOP_PROCESSES__\n"
-                "1234, python train.py, 39000, GPU-a\n",
+                "1234, python train.py, 39000, GPU-a\n"
+                "__SLURM_GPU_TOP_PMON__\n"
+                "# gpu pid type sm mem enc dec command\n"
+                "0 1234 C 6 2 - - python\n"
+                "__SLURM_GPU_TOP_PS__\n"
+                "1234 ez275 595.5 1.1 2:13:03 python train.py\n",
             )
         raise AssertionError(command)
 

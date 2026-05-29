@@ -6,9 +6,10 @@ and SSH to allocated compute nodes.
 
 It discovers current running Slurm jobs, filters to GPU-enabled allocations,
 polls each allocated node with `nvidia-smi`, and redraws a grouped dashboard in
-the terminal. The TUI mirrors the useful parts of `nvitop`: colored load
-intensity, all-GPU and per-GPU utilization, rolling utilization graphs, and a
-running GPU-process table.
+the terminal. The TUI mirrors the default `nvitop` report: boxed GPU tables,
+driver/CUDA versions, persistence mode, bus id, display/MIG/ECC state,
+fan/temp/perf/power, memory and utilization bars, SM clock, host
+CPU/MEM/SWAP/load/uptime, and a running GPU-process table.
 
 ## Quick start
 
@@ -46,9 +47,7 @@ only for jobs Slurm reports as GPU-backed.
 
 - Re-discovers Slurm jobs every refresh, so new jobs appear and ended jobs
   disappear without restarting the dashboard.
-- Maintains rolling all-GPU and per-GPU utilization history while the dashboard
-  is running.
-- Uses Unicode bars/graphs and ANSI colors by default on interactive terminals.
+- Uses Unicode bars and ANSI colors by default on interactive terminals.
   Use `--color never` or `--no-unicode` for plain terminals and logs.
 - Polls nodes concurrently with per-node timeouts, so one slow or dead node does
   not freeze the whole display.

@@ -29,6 +29,14 @@ class GPUProcess:
     name: str
     used_memory_mib: Optional[int]
     gpu_uuid: str
+    type: str = "C"
+    user: str = ""
+    cpu_percent: Optional[float] = None
+    mem_percent: Optional[float] = None
+    elapsed: str = ""
+    command: str = ""
+    sm_util_percent: Optional[int] = None
+    mem_bw_util_percent: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -44,7 +52,32 @@ class GPUDevice:
     temperature_c: Optional[int]
     power_draw_w: Optional[float]
     power_limit_w: Optional[float]
+    persistence_mode: str = ""
+    pci_bus_id: str = ""
+    display_active: str = ""
+    mig_mode: str = ""
+    ecc_errors: Optional[int] = None
+    fan_speed_percent: Optional[int] = None
+    performance_state: str = ""
+    compute_mode: str = ""
+    sm_clock_mhz: Optional[int] = None
     processes: Tuple[GPUProcess, ...] = ()
+
+
+@dataclass(frozen=True)
+class HostStats:
+    cpu_percent: Optional[float] = None
+    memory_percent: Optional[float] = None
+    memory_used_mib: Optional[int] = None
+    memory_total_mib: Optional[int] = None
+    swap_percent: Optional[float] = None
+    swap_used_mib: Optional[int] = None
+    swap_total_mib: Optional[int] = None
+    load_average: Tuple[float, float, float] = ()
+    uptime_seconds: Optional[float] = None
+    hostname: str = ""
+    driver_version: str = ""
+    cuda_version: str = ""
 
 
 @dataclass(frozen=True)
@@ -52,6 +85,7 @@ class NodeSnapshot:
     node: str
     jobs: Tuple[SlurmJob, ...] = ()
     gpus: Tuple[GPUDevice, ...] = ()
+    host: HostStats = field(default_factory=HostStats)
     error: Optional[str] = None
 
 
