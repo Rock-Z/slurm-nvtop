@@ -192,7 +192,15 @@ def _gpu_rows(
         (
             f"{gpu.index:>3}  {_gpu_name(gpu.name):<17.17} {_short(_on_off(gpu.persistence_mode), 3):>8}",
             f"{_short(gpu.mig_mode, 8):<8} {_na_int(gpu.ecc_errors):>11}",
-            _bar_stat("MEM", mem_percent, _mem_usage_short(gpu), color=color, unicode=unicode, width=_stat_bar_width(widths[-1])),
+            _bar_stat(
+                "MEM",
+                mem_percent,
+                _mem_usage_short(gpu),
+                color=color,
+                unicode=unicode,
+                width=_stat_bar_width(widths[-1]),
+                suffix_width=_stat_suffix_width(widths[-1]),
+            ),
         ),
         widths,
         chars,
@@ -201,7 +209,15 @@ def _gpu_rows(
         (
             f"{_fan(gpu):>3}  {_temp(gpu):>4} {_short(gpu.performance_state, 4):>4} {_power(gpu):>13}",
             f"{_mem_usage(gpu):>21}",
-            _bar_stat("UTL", util, f"{_percent(util):>4} @ {_clock(gpu)}", color=color, unicode=unicode, width=_stat_bar_width(widths[-1])),
+            _bar_stat(
+                "UTL",
+                util,
+                f"{_percent(util):>4} @ {_clock(gpu)}",
+                color=color,
+                unicode=unicode,
+                width=_stat_bar_width(widths[-1]),
+                suffix_width=_stat_suffix_width(widths[-1]),
+            ),
         ),
         widths,
         chars,
@@ -626,7 +642,15 @@ def _gpu_box(
             (
                 f"{gpu.index:>3}  {_gpu_name(gpu.name):<17.17} {_short(_on_off(gpu.persistence_mode), 3):>8}",
                 f"{_short(gpu.mig_mode, 8):<8} {_na_int(gpu.ecc_errors):>11}",
-                _bar_stat("MEM", mem_percent, _mem_usage_short(gpu), color=color, unicode=unicode, width=_stat_bar_width(c3)),
+                _bar_stat(
+                    "MEM",
+                    mem_percent,
+                    _mem_usage_short(gpu),
+                    color=color,
+                    unicode=unicode,
+                    width=_stat_bar_width(c3),
+                    suffix_width=_stat_suffix_width(c3),
+                ),
             ),
             (c1, c2, c3),
             chars,
@@ -635,7 +659,15 @@ def _gpu_box(
             (
                 f"{_fan(gpu):>3}  {_temp(gpu):>4} {_short(gpu.performance_state, 4):>4} {_power(gpu):>13}",
                 f"{_mem_usage(gpu):>21}",
-                _bar_stat("UTL", util, f"{_percent(util):>4} @ {_clock(gpu)}", color=color, unicode=unicode, width=_stat_bar_width(c3)),
+                _bar_stat(
+                    "UTL",
+                    util,
+                    f"{_percent(util):>4} @ {_clock(gpu)}",
+                    color=color,
+                    unicode=unicode,
+                    width=_stat_bar_width(c3),
+                    suffix_width=_stat_suffix_width(c3),
+                ),
             ),
             (c1, c2, c3),
             chars,
@@ -710,13 +742,19 @@ def _bar_stat(
     color: bool,
     unicode: bool,
     width: int = 8,
+    suffix_width: int = 14,
 ) -> str:
     bar = _fraction_bar(percent, width=width, color=color, unicode=unicode)
-    return f"{label}: {bar} {suffix}"
+    suffix = _clip_visible(str(suffix).strip(), suffix_width)
+    return f"{label}: {bar} {suffix:<{suffix_width}}"
 
 
 def _stat_bar_width(column_width: int) -> int:
     return max(8, min(28, column_width - 24))
+
+
+def _stat_suffix_width(column_width: int) -> int:
+    return max(12, min(18, column_width - _stat_bar_width(column_width) - 7))
 
 
 def _host_bar(label: str, percent: Optional[float], width: int, *, color: bool, unicode: bool) -> str:

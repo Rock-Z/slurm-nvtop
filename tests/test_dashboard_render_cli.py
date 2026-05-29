@@ -134,6 +134,15 @@ def test_render_snapshot_rich_mode_has_color_graphs_averages_and_process_table()
     assert rendered.count("GPU  Name        Persistence-M") == 1
 
 
+def test_render_snapshot_aligns_mem_and_util_suffixes():
+    rendered = render_snapshot(_single_gpu_snapshot(util=83, mem=40), width=120, color=False, unicode=True)
+    lines = rendered.splitlines()
+    mem_line = next(line for line in lines if "│MEM:" in line)
+    util_line = next(line for line in lines if "│UTL:" in line)
+
+    assert mem_line.index("40000MiB") == util_line.index("83% @ 1980MHz")
+
+
 def test_render_snapshot_ascii_fallback_keeps_graph_visible():
     snapshot = _single_gpu_snapshot(util=75, mem=50)
     rendered = render_snapshot(
