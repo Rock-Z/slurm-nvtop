@@ -4,8 +4,16 @@ import slurm_gpu_top.cli as cli_module
 from slurm_gpu_top.cli import main
 from slurm_gpu_top.dashboard import build_snapshot
 from slurm_gpu_top.history import UtilizationHistory
-from slurm_gpu_top.models import ClusterSnapshot, CommandResult, NodeSnapshot, SnapshotBuilderConfig
-from slurm_gpu_top.render import render_snapshot
+from slurm_gpu_top.models import (
+    ClusterSnapshot,
+    CommandResult,
+    GPUDevice,
+    GPUProcess,
+    NodeSnapshot,
+    SlurmJob,
+    SnapshotBuilderConfig,
+)
+from slurm_gpu_top.render import _format_process_table_row, _process_table_layout, render_snapshot
 
 
 def test_build_snapshot_rediscovers_jobs_each_time_for_additions_and_ends():
@@ -190,10 +198,128 @@ def test_render_snapshot_respects_terminal_height():
     assert "lines hidden" in rendered
 
 
+def test_render_snapshot_drops_process_table_before_gpu_truncation():
+    snapshot = _single_gpu_snapshot(util=75, mem=50)
+
+    rendered = render_snapshot(snapshot, width=120, height=13, color=False, unicode=True)
+
+    assert "UTL:" in rendered
+    assert "Processes:" not in rendered
+    assert "lines hidden" not in rendered
+
+
+def test_cluster_process_columns_align_dynamically_and_clip():
+    rows = [
+        {
+            "node": "n1",
+            "gpu": "0",
+            "pid": "7",
+            "type": "C",
+            "user": "ez",
+            "gpu_mem": "1MiB",
+            "sm": "6",
+            "gmbw": "2",
+            "cpu": "5.5",
+            "mem": "1.1",
+            "time": "0:01",
+            "command": "python short.py",
+        },
+        {
+            "node": "very-long-node-name-that-must-clip",
+            "gpu": "10",
+            "pid": "1234567",
+            "type": "C",
+            "user": "longusername",
+            "gpu_mem": "12345MiB",
+            "sm": "100",
+            "gmbw": "99",
+            "cpu": "1234.5",
+            "mem": "12.3",
+            "time": "12:34:56",
+            "command": "/very/long/command/that/should/be/clipped/at/the/right/edge",
+        },
+    ]
+
+    columns, command_width = _process_table_layout(rows, inner=86)
+    rendered_rows = [_format_process_table_row(row, columns, command_width) for row in rows]
+    pid_start = next_start = 0
+    for key, _label, _align, width in columns:
+        if key == "pid":
+            break
+        next_start += width + 1
+    pid_start = next_start
+    pid_width = next(width for key, _label, _align, width in columns if key == "pid")
+
+    assert all(len(row) <= 86 for row in rendered_rows)
+    assert rendered_rows[0][pid_start : pid_start + pid_width].endswith("7")
+    assert rendered_rows[1][pid_start : pid_start + pid_width].endswith("1234567")
+
+
 def test_render_snapshot_handles_empty_state():
     rendered = render_snapshot(ClusterSnapshot(generated_at=10), width=80)
 
     assert "No running GPU-backed Slurm jobs found." in rendered
+
+
+def test_rendered_process_lines_clip_to_terminal_width():
+    job = SlurmJob(
+        job_id="101",
+        name="train",
+        user="ez275",
+        state="RUNNING",
+        elapsed="1:00",
+        node_count=1,
+        nodelist="very-long-node-name-that-must-clip",
+        tres="gres/gpu=1",
+        nodes=("very-long-node-name-that-must-clip",),
+    )
+    proc = GPUProcess(
+        pid=123456789,
+        name="python",
+        used_memory_mib=98765,
+        gpu_uuid="GPU-a",
+        user="verylonguser",
+        cpu_percent=1234.5,
+        mem_percent=12.3,
+        elapsed="12:34:56",
+        command="/very/long/path/to/python train.py --with-many-arguments-that-must-not-overflow",
+        sm_util_percent=100,
+        mem_bw_util_percent=99,
+    )
+    gpu = GPUDevice(
+        node="very-long-node-name-that-must-clip",
+        index=12,
+        uuid="GPU-a",
+        name="NVIDIA A100",
+        gpu_util_percent=99,
+        mem_util_percent=50,
+        mem_used_mib=98765,
+        mem_total_mib=131072,
+        temperature_c=60,
+        power_draw_w=250.0,
+        power_limit_w=400.0,
+        processes=(proc,),
+    )
+    snapshot = ClusterSnapshot(
+        nodes=(NodeSnapshot(node="very-long-node-name-that-must-clip", jobs=(job,), gpus=(gpu,)),),
+        generated_at=10,
+    )
+
+    rendered = render_snapshot(snapshot, width=86, color=False, unicode=True)
+
+    assert "Processes:" in rendered
+    assert all(len(line) <= 86 for line in rendered.splitlines())
+
+
+def test_live_sleep_returns_true_on_q(monkeypatch):
+    class FakeInput:
+        def read(self, _size):
+            return "q"
+
+    monkeypatch.setattr(cli_module.sys, "stdin", FakeInput())
+    monkeypatch.setattr(cli_module.select, "select", lambda read, _write, _error, _timeout: (read, [], []))
+
+    assert cli_module._sleep_or_quit(10, keyboard_enabled=True) is True
 
 
 def _single_gpu_snapshot(*, util: int, mem: int) -> ClusterSnapshot:

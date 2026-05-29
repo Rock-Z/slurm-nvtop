@@ -3,9 +3,12 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import select
 import shutil
 import sys
+import termios
 import time
+import tty
 from typing import Sequence
 
 from .dashboard import build_snapshot
@@ -51,10 +54,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     history = UtilizationHistory(maxlen=args.history)
     live_fullscreen = not args.once and not args.no_clear and sys.stdout.isatty()
+    keyboard_enabled = live_fullscreen
+    terminal_attrs = None
 
     try:
         if live_fullscreen:
             print("\033[?1049h\033[?25l\033[H\033[J", end="", flush=True)
+        if keyboard_enabled and sys.stdin.isatty():
+            terminal_attrs = termios.tcgetattr(sys.stdin.fileno())
+            tty.setcbreak(sys.stdin.fileno())
+            attrs = termios.tcgetattr(sys.stdin.fileno())
+            attrs[3] &= ~termios.ECHO
+            termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, attrs)
         while True:
             snapshot = build_snapshot(config=config)
             history.record(snapshot)
@@ -78,12 +89,15 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(rendered, flush=True)
             if args.once:
                 return 1 if snapshot.errors else 0
-            time.sleep(args.interval)
+            if _sleep_or_quit(args.interval, keyboard_enabled=keyboard_enabled):
+                return 0
     except KeyboardInterrupt:
         if sys.stdout.isatty():
             print()
         return 130
     finally:
+        if terminal_attrs is not None:
+            termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, terminal_attrs)
         if live_fullscreen:
             print("\033[?25h\033[?1049l", end="", flush=True)
 
@@ -151,3 +165,27 @@ def _load_mock_snapshot(path: str) -> ClusterSnapshot:
         generated_at=float(data.get("generated_at", time.time())),
         user_filter=data.get("user_filter"),
     )
+
+
+def _sleep_or_quit(interval: float, *, keyboard_enabled: bool) -> bool:
+    if not keyboard_enabled:
+        time.sleep(interval)
+        return False
+
+    deadline = time.monotonic() + max(0.0, interval)
+    while True:
+        timeout = max(0.0, min(0.1, deadline - time.monotonic()))
+        readable, _writable, _errored = select.select([sys.stdin], [], [], timeout)
+        if readable:
+            char = sys.stdin.read(1)
+            if char == "":
+                if time.monotonic() >= deadline:
+                    return False
+                time.sleep(timeout)
+                continue
+            if char in {"q", "Q"}:
+                return True
+            if char == "\x03":
+                raise KeyboardInterrupt
+        if time.monotonic() >= deadline:
+            return False

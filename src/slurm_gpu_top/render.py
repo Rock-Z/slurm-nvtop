@@ -5,7 +5,7 @@ import re
 import shutil
 import sys
 import time
-from typing import Iterable, Optional, Sequence
+from typing import Iterable, Mapping, Optional, Sequence
 
 from .models import ClusterSnapshot, GPUDevice, GPUProcess, HostStats, NodeSnapshot, SlurmJob
 
@@ -42,9 +42,8 @@ def render_snapshot(
     version: str = "0.1.0",
 ) -> str:
     del all_gpu_history, gpu_histories
-    term_width, term_height = _terminal_size()
+    term_width, _term_height = _terminal_size()
     width = max(79, width or term_width)
-    height = height or term_height
     color = _should_color() if color is None else color
     gpus = _all_gpus(snapshot)
     avg_util = _avg(gpu.gpu_util_percent for gpu in gpus)
@@ -62,7 +61,7 @@ def render_snapshot(
         lines.append(_style("No running GPU-backed Slurm jobs found.", "yellow", color))
         return "\n".join(lines)
 
-    lines.extend(
+    gpu_lines = list(
         _cluster_gpu_box(
             snapshot,
             width=width,
@@ -71,10 +70,12 @@ def render_snapshot(
             version=version,
             avg_util=avg_util,
             avg_mem=avg_mem,
-        )
+        ),
     )
-    lines.append("")
-    lines.extend(_cluster_process_box(snapshot, width=width, color=color, unicode=unicode))
+    process_lines = ["", *_cluster_process_box(snapshot, width=width, color=color, unicode=unicode)]
+    lines.extend(gpu_lines)
+    if height is None or len(lines) + len(process_lines) <= height:
+        lines.extend(process_lines)
     lines = _fit_height(lines, height, color=color)
     return "\n".join(lines)
 
@@ -220,14 +221,16 @@ def _cluster_process_box(
         inner,
         chars,
     )
-    yield _box_line("NODE          GPU     PID      USER  GPU-MEM %SM %GMBW  %CPU  %MEM     TIME  COMMAND", inner, chars)
+    process_rows = [_cluster_process_row_data(node, gpu, proc) for node, gpu, proc in rows]
+    process_columns, command_width = _process_table_layout(process_rows, inner)
+    yield _box_line(_format_process_header(process_columns, command_width), inner, chars)
     yield chars["ml_bold"] + chars["h2"] * inner + chars["mr_bold"]
     if not rows:
         yield _box_line(_style("No running GPU compute processes found.", "bright_black", color), inner, chars)
-    for idx, (node, gpu, proc) in enumerate(rows):
+    for idx, row in enumerate(process_rows):
         if idx:
             yield chars["ml"] + chars["h1"] * inner + chars["mr"]
-        yield _box_line(_format_cluster_process_row(node, gpu, proc, inner), inner, chars)
+        yield _box_line(_format_process_table_row(row, process_columns, command_width), inner, chars)
     yield chars["bl"] + chars["h2"] * inner + chars["br"]
 
 
@@ -241,6 +244,86 @@ def _format_cluster_process_row(node: NodeSnapshot, gpu: GPUDevice, proc: GPUPro
         f"{(proc.elapsed or 'N/A'):>8}  "
     )
     return fixed + _clip_visible(command, max(0, width - _visible_len(fixed)))
+
+
+def _cluster_process_row_data(node: NodeSnapshot, gpu: GPUDevice, proc: GPUProcess) -> dict[str, str]:
+    return {
+        "node": node.node,
+        "gpu": str(gpu.index),
+        "pid": str(proc.pid),
+        "type": _short(proc.type, 3),
+        "user": proc.user or "N/A",
+        "gpu_mem": _value(proc.used_memory_mib, "MiB"),
+        "sm": _na_int(proc.sm_util_percent),
+        "gmbw": _na_int(proc.mem_bw_util_percent),
+        "cpu": _na_float(proc.cpu_percent),
+        "mem": _na_float(proc.mem_percent),
+        "time": proc.elapsed or "N/A",
+        "command": proc.command or proc.name or "N/A",
+    }
+
+
+def _process_table_layout(
+    rows: Sequence[Mapping[str, str]],
+    inner: int,
+) -> tuple[list[tuple[str, str, str, int]], int]:
+    specs = [
+        ("node", "NODE", "left", 4, 24),
+        ("gpu", "GPU", "right", 3, 4),
+        ("pid", "PID", "right", 3, 10),
+        ("type", "T", "left", 1, 3),
+        ("user", "USER", "left", 4, 14),
+        ("gpu_mem", "GPU-MEM", "right", 5, 10),
+        ("sm", "%SM", "right", 3, 4),
+        ("gmbw", "%GMBW", "right", 5, 5),
+        ("cpu", "%CPU", "right", 4, 6),
+        ("mem", "%MEM", "right", 4, 5),
+        ("time", "TIME", "right", 4, 10),
+    ]
+    widths = {
+        key: min(max_width, max(min_width, _visible_len(label), *(len(row.get(key, "")) for row in rows)))
+        for key, label, _align, min_width, max_width in specs
+    }
+
+    def fixed_width() -> int:
+        return sum(widths[key] for key, *_rest in specs) + len(specs) - 1 + 2
+
+    shrink_order = ("node", "user", "time", "pid", "gpu_mem", "cpu", "mem", "sm", "gmbw", "type", "gpu")
+    min_widths = {key: min_width for key, _label, _align, min_width, _max_width in specs}
+    while fixed_width() > inner:
+        for key in shrink_order:
+            if widths[key] > min_widths[key]:
+                widths[key] -= 1
+                break
+        else:
+            break
+
+    columns = [(key, label, align, widths[key]) for key, label, align, _min_width, _max_width in specs]
+    return columns, max(0, inner - fixed_width())
+
+
+def _format_process_header(columns: Sequence[tuple[str, str, str, int]], command_width: int) -> str:
+    return _format_process_table_row(
+        {key: label for key, label, _align, _width in columns} | {"command": "COMMAND"},
+        columns,
+        command_width,
+    )
+
+
+def _format_process_table_row(
+    row: Mapping[str, str],
+    columns: Sequence[tuple[str, str, str, int]],
+    command_width: int,
+) -> str:
+    cells = []
+    for key, _label, align, width in columns:
+        value = _clip_visible(row.get(key, ""), width)
+        padding = " " * max(0, width - _visible_len(value))
+        cells.append(padding + value if align == "right" else value + padding)
+    fixed = " ".join(cells)
+    if command_width <= 0:
+        return fixed
+    return fixed + "  " + _clip_visible(row.get("command", ""), command_width)
 
 
 def _render_node(node: NodeSnapshot, *, width: int, color: bool, unicode: bool) -> Iterable[str]:
