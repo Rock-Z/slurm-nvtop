@@ -122,6 +122,7 @@ def test_render_snapshot_rich_mode_has_color_graphs_averages_and_process_table()
     assert "Driver Version" in rendered
     assert "Memory-Usage" in rendered
     assert "GPU-Util" in rendered
+    assert "Bus-Id" not in rendered
     assert "MEM:" in rendered
     assert "UTL:" in rendered
     assert "CPU 41%" in rendered
@@ -244,6 +245,11 @@ def test_render_snapshot_omits_repeated_gpu_label_block_and_draws_node_history()
     assert "now" in rendered
     assert "gpu001" in rendered
     assert "gpu002" in rendered
+    assert "Bus-Id" not in rendered
+    assert rendered.index("GPU MEM") < rendered.index("Processes:")
+    lines = rendered.splitlines()
+    second_node_line = next(idx for idx, line in enumerate(lines) if "[gpu002]" in line)
+    assert lines[second_node_line + 1].startswith("├")
 
 
 def test_render_snapshot_respects_terminal_height():

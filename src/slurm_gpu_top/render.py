@@ -72,32 +72,14 @@ def render_snapshot(
             version=version,
             avg_util=avg_util,
             avg_mem=avg_mem,
-        ),
-    )
-    history_lines = list(
-        _node_history_box(
-            snapshot,
-            width=width,
-            color=color,
-            unicode=unicode,
             node_util_histories=node_util_histories or {},
             node_mem_histories=node_mem_histories or {},
         ),
     )
     process_lines = ["", *_cluster_process_box(snapshot, width=width, color=color, unicode=unicode)]
     lines.extend(gpu_lines)
-    if history_lines:
-        if not history_lines[0]:
-            lines.extend(history_lines)
-        else:
-            lines.extend(["", *history_lines])
     if height is None or len(lines) + len(process_lines) <= height:
-        if history_lines:
-            chart_count = len(history_lines) if not history_lines[0] else len(history_lines) + 1
-            chart_lines = lines[-chart_count:]
-            lines = lines[:-chart_count] + process_lines + chart_lines
-        else:
-            lines.extend(process_lines)
+        lines.extend(process_lines)
     lines = _fit_height(lines, height, color=color)
     return "\n".join(lines)
 
@@ -111,6 +93,8 @@ def _cluster_gpu_box(
     version: str,
     avg_util: Optional[float],
     avg_mem: Optional[float],
+    node_util_histories: Mapping[str, Sequence[Optional[int]]],
+    node_mem_histories: Mapping[str, Sequence[Optional[int]]],
 ) -> Iterable[str]:
     chars = _box_chars(unicode)
     w = min(width, 140)
@@ -140,15 +124,15 @@ def _cluster_gpu_box(
         if node.error:
             yield _box_line(_style(f"! {node.error}", "bright_red", color), inner, chars)
             continue
+        yield _joint_line(chars, (c1, c2, c3, c4), "top")
         if not labels_emitted:
-            yield _joint_line(chars, (c1, c2, c3, c4), "top")
             yield _row(
-                ("GPU  Name        Persistence-M", "Bus-Id        Disp.A", "MIG M.   Uncorr. ECC", ""),
+                ("GPU  Name        Persistence-M", "MIG M.   Uncorr. ECC", "Memory-Usage", ""),
                 (c1, c2, c3, c4),
                 chars,
             )
             yield _row(
-                ("Fan  Temp  Perf  Pwr:Usage/Cap", "        Memory-Usage", "GPU-Util  Compute M.", ""),
+                ("Fan  Temp  Perf  Pwr:Usage/Cap", "", "GPU-Util  Compute M.", ""),
                 (c1, c2, c3, c4),
                 chars,
             )
@@ -161,6 +145,20 @@ def _cluster_gpu_box(
             if gpu_idx:
                 yield _joint_line(chars, (c1, c2, c3, c4), "mid")
             yield from _gpu_rows(gpu, (c1, c2, c3, c4), chars, color=color, unicode=unicode)
+    history_rows = list(
+        _node_history_rows(
+            snapshot,
+            width=inner,
+            chars=chars,
+            color=color,
+            unicode=unicode,
+            node_util_histories=node_util_histories,
+            node_mem_histories=node_mem_histories,
+        ),
+    )
+    if history_rows:
+        yield chars["ml_bold"] + chars["h2"] * inner + chars["mr_bold"]
+        yield from history_rows
     yield chars["bl"] + chars["h2"] * inner + chars["br"]
 
 
@@ -185,8 +183,8 @@ def _gpu_rows(
     yield _row(
         (
             f"{gpu.index:>3}  {_gpu_name(gpu.name):<17.17} {_short(_on_off(gpu.persistence_mode), 3):>8}",
-            f"{_short(gpu.pci_bus_id, 16):<16} {_short(_on_off(gpu.display_active), 3):>3}",
             f"{_short(gpu.mig_mode, 8):<8} {_na_int(gpu.ecc_errors):>11}",
+            f"{_mem_usage(gpu):>21}",
             _bar_stat("MEM", mem_percent, _mem_usage_short(gpu), color=color, unicode=unicode),
         ),
         widths,
@@ -195,7 +193,7 @@ def _gpu_rows(
     yield _row(
         (
             f"{_fan(gpu):>3}  {_temp(gpu):>4} {_short(gpu.performance_state, 4):>4} {_power(gpu):>13}",
-            f"{_mem_usage(gpu):>21}",
+            "",
             f"{_percent(util):>7} {_short(gpu.compute_mode, 12):>12}",
             _bar_stat("UTL", util, f"{_percent(util):>4} @ {_clock(gpu)}", color=color, unicode=unicode),
         ),
@@ -224,10 +222,11 @@ def _node_status(node: NodeSnapshot, *, color: bool) -> str:
     )
 
 
-def _node_history_box(
+def _node_history_rows(
     snapshot: ClusterSnapshot,
     *,
     width: int,
+    chars: dict[str, str],
     color: bool,
     unicode: bool,
     node_util_histories: Mapping[str, Sequence[Optional[int]]],
@@ -241,9 +240,7 @@ def _node_history_box(
     if not nodes:
         return
 
-    chars = _box_chars(unicode)
-    w = min(width, 140)
-    inner = w - 2
+    inner = width
     max_cells = max(1, (inner + 1) // 18)
     omitted = max(0, len(nodes) - max_cells)
     nodes = nodes[:max_cells]
@@ -252,7 +249,6 @@ def _node_history_box(
         node_labels[-1] = f"{node_labels[-1]} (+{omitted})"
     cell_widths = _split_widths(inner, len(nodes))
 
-    yield chars["tl"] + chars["tj"].join(chars["h2"] * cell_width for cell_width in cell_widths) + chars["tr"]
     cells = [
         _node_history_cell(
             node_labels[idx],
@@ -272,7 +268,6 @@ def _node_history_box(
             cell_widths,
             chars,
         )
-    yield chars["bl"] + chars["bj"].join(chars["h2"] * cell_width for cell_width in cell_widths) + chars["br"]
 
 
 def _node_history_cell(
@@ -598,8 +593,8 @@ def _gpu_box(
     yield chars["tl"] + chars["h2"] * inner + chars["tr"]
     yield _box_line(_clip_visible(title, inner), inner, chars)
     yield _joint_line(chars, (c1, c2, c3, c4), "top")
-    yield _row(("GPU  Name        Persistence-M", "Bus-Id        Disp.A", "MIG M.   Uncorr. ECC", ""), (c1, c2, c3, c4), chars)
-    yield _row(("Fan  Temp  Perf  Pwr:Usage/Cap", "        Memory-Usage", "GPU-Util  Compute M.", ""), (c1, c2, c3, c4), chars)
+    yield _row(("GPU  Name        Persistence-M", "MIG M.   Uncorr. ECC", "Memory-Usage", ""), (c1, c2, c3, c4), chars)
+    yield _row(("Fan  Temp  Perf  Pwr:Usage/Cap", "", "GPU-Util  Compute M.", ""), (c1, c2, c3, c4), chars)
     yield _joint_line(chars, (c1, c2, c3, c4), "mid_bold")
 
     if not gpus:
@@ -612,8 +607,8 @@ def _gpu_box(
         yield _row(
             (
                 f"{gpu.index:>3}  {_gpu_name(gpu.name):<17.17} {_short(_on_off(gpu.persistence_mode), 3):>8}",
-                f"{_short(gpu.pci_bus_id, 16):<16} {_short(_on_off(gpu.display_active), 3):>3}",
                 f"{_short(gpu.mig_mode, 8):<8} {_na_int(gpu.ecc_errors):>11}",
+                f"{_mem_usage(gpu):>21}",
                 _bar_stat("MEM", mem_percent, _mem_usage_short(gpu), color=color, unicode=unicode),
             ),
             (c1, c2, c3, c4),
@@ -622,7 +617,7 @@ def _gpu_box(
         yield _row(
             (
                 f"{_fan(gpu):>3}  {_temp(gpu):>4} {_short(gpu.performance_state, 4):>4} {_power(gpu):>13}",
-                f"{_mem_usage(gpu):>21}",
+                "",
                 f"{_percent(util):>7} {_short(gpu.compute_mode, 12):>12}",
                 _bar_stat("UTL", util, f"{_percent(util):>4} @ {_clock(gpu)}", color=color, unicode=unicode),
             ),
