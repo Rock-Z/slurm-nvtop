@@ -9,7 +9,7 @@ from slurm_gpu_top.slurm import (
 
 
 def test_parse_squeue_line_with_gpu_fields():
-    job = parse_squeue_line("123|train|ez275|RUNNING|1:02:03|2|gpu[001-002]|gres/gpu:2|gpu:a100:4")
+    job = parse_squeue_line("123|train|ez275|RUNNING|1:02:03|2|gpu[001-002]|gres/gpu:2")
 
     assert job.job_id == "123"
     assert job.name == "train"
@@ -19,11 +19,11 @@ def test_parse_squeue_line_with_gpu_fields():
 
 
 def test_parse_squeue_fallback_line():
-    job = parse_squeue_fallback_line("124|debug|ez275|RUNNING|0:10|1|node01|gpu:1")
+    job = parse_squeue_fallback_line("124|debug|ez275|RUNNING|0:10|1|node01")
 
     assert job.job_id == "124"
-    assert job.gres == "gpu:1"
-    assert job.gpu_hint
+    assert job.nodelist == "node01"
+    assert not job.gpu_hint
 
 
 def test_parse_scontrol_key_values_preserves_spaces_inside_values():
@@ -70,8 +70,8 @@ def test_discover_gpu_jobs_filters_cpu_jobs_and_expands_nodes():
                 0,
                 "\n".join(
                     [
-                        "111|cpu|ez275|RUNNING|0:01|1|cpu001|(null)|(null)",
-                        "222|gpu|ez275|RUNNING|0:02|2|gpu[001-002]|gres/gpu:1|gpu:a100:2",
+                        "111|cpu|ez275|RUNNING|0:01|1|cpu001|(null)",
+                        "222|gpu|ez275|RUNNING|0:02|2|gpu[001-002]|gres/gpu:1",
                     ]
                 ),
             )
@@ -105,15 +105,15 @@ def test_discover_gpu_jobs_falls_back_when_squeue_format_is_not_supported():
             seen_formats.append(command[-1])
             if "%b" in command[-1]:
                 return CommandResult(command, 1, "", "invalid format")
-            return CommandResult(command, 0, "333|gpu|ez275|RUNNING|0:03|1|gpu009|gpu:h100:1")
+            return CommandResult(command, 0, "333|gpu|ez275|RUNNING|0:03|1|gpu009")
         if command[:3] == ("scontrol", "show", "job"):
-            return CommandResult(command, 1, "", "permission denied")
+            return CommandResult(command, 0, "JobId=333 AllocTRES=gres/gpu=1 NodeList=gpu009")
         if command[:3] == ("scontrol", "show", "hostnames"):
             return CommandResult(command, 1, "", "permission denied")
         raise AssertionError(command)
 
     jobs = discover_gpu_jobs(user="ez275", runner=runner)
 
-    assert seen_formats == ["%A|%j|%u|%T|%M|%D|%R|%b|%G", "%A|%j|%u|%T|%M|%D|%R|%G"]
+    assert seen_formats == ["%A|%j|%u|%T|%M|%D|%R|%b", "%A|%j|%u|%T|%M|%D|%R"]
     assert jobs[0].job_id == "333"
     assert jobs[0].nodes == ("gpu009",)

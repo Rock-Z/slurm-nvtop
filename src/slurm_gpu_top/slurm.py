@@ -7,8 +7,8 @@ from typing import Iterable, List, Optional, Sequence, Tuple
 from .commands import CommandRunner, run_command
 from .models import SlurmJob
 
-SQUEUE_GPU_FORMAT = "%A|%j|%u|%T|%M|%D|%R|%b|%G"
-SQUEUE_FALLBACK_FORMAT = "%A|%j|%u|%T|%M|%D|%R|%G"
+SQUEUE_GPU_FORMAT = "%A|%j|%u|%T|%M|%D|%R|%b"
+SQUEUE_FALLBACK_FORMAT = "%A|%j|%u|%T|%M|%D|%R"
 
 
 class SlurmError(RuntimeError):
@@ -77,10 +77,10 @@ def _query_squeue(
 
 
 def parse_squeue_line(line: str) -> SlurmJob:
-    parts = line.split("|", 8)
-    if len(parts) != 9:
+    parts = line.split("|", 7)
+    if len(parts) != 8:
         raise ValueError(f"unexpected squeue line with {len(parts)} fields: {line!r}")
-    job_id, name, user, state, elapsed, node_count, nodelist, tres_per_node, gres = parts
+    job_id, name, user, state, elapsed, node_count, nodelist, tres_per_node = parts
     return SlurmJob(
         job_id=job_id.strip(),
         name=name.strip(),
@@ -89,16 +89,15 @@ def parse_squeue_line(line: str) -> SlurmJob:
         elapsed=elapsed.strip(),
         node_count=_parse_optional_int(node_count),
         nodelist=nodelist.strip(),
-        gres=gres.strip(),
         tres=tres_per_node.strip(),
     )
 
 
 def parse_squeue_fallback_line(line: str) -> SlurmJob:
-    parts = line.split("|", 7)
-    if len(parts) != 8:
+    parts = line.split("|", 6)
+    if len(parts) != 7:
         raise ValueError(f"unexpected fallback squeue line with {len(parts)} fields: {line!r}")
-    job_id, name, user, state, elapsed, node_count, nodelist, gres = parts
+    job_id, name, user, state, elapsed, node_count, nodelist = parts
     return SlurmJob(
         job_id=job_id.strip(),
         name=name.strip(),
@@ -107,7 +106,6 @@ def parse_squeue_fallback_line(line: str) -> SlurmJob:
         elapsed=elapsed.strip(),
         node_count=_parse_optional_int(node_count),
         nodelist=nodelist.strip(),
-        gres=gres.strip(),
     )
 
 

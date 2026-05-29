@@ -51,9 +51,15 @@ only for jobs Slurm reports as GPU-backed.
 ## Development
 
 ```bash
-python -m pytest
+env PYTHONPATH=src UV_CACHE_DIR=/tmp/uv-cache uv run pytest
 python -m slurm_gpu_top --once --mock-json tests/fixtures/sample_snapshot.json
 ```
 
 `--mock-json` accepts a saved snapshot shape and is intended for renderer
 development and smoke tests on machines without Slurm or GPUs.
+
+For a live smoke test without installing the package:
+
+```bash
+env PYTHONPATH=src python -m slurm_gpu_top --once
+```
