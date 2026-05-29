@@ -9,6 +9,7 @@ from typing import Sequence
 
 from .dashboard import build_snapshot
 from .history import UtilizationHistory
+from . import __version__
 from .models import (
     ClusterSnapshot,
     GPUDevice,
@@ -35,6 +36,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 unicode=not args.no_unicode,
                 all_gpu_history=history.all_history(),
                 gpu_histories={key: tuple(values) for key, values in history.by_gpu.items()},
+                version=__version__,
             )
         )
         return 0
@@ -49,11 +51,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     history = UtilizationHistory(maxlen=args.history)
 
     try:
+        if not args.once and not args.no_clear and sys.stdout.isatty():
+            print("\033[?25l", end="", flush=True)
         while True:
             snapshot = build_snapshot(config=config)
             history.record(snapshot)
-            if not args.no_clear and not args.once and sys.stdout.isatty():
-                print("\033[2J\033[H", end="")
+            if not args.no_clear and not args.once:
+                print("\033[H\033[J", end="")
             print(
                 render_snapshot(
                     snapshot,
@@ -61,6 +65,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     unicode=not args.no_unicode,
                     all_gpu_history=history.all_history(),
                     gpu_histories={key: tuple(values) for key, values in history.by_gpu.items()},
+                    version=__version__,
                 ),
                 flush=True,
             )
@@ -71,6 +76,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         if sys.stdout.isatty():
             print()
         return 130
+    finally:
+        if not args.once and not args.no_clear and sys.stdout.isatty():
+            print("\033[?25h", end="", flush=True)
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:

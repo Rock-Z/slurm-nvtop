@@ -38,6 +38,7 @@ def render_snapshot(
     unicode: bool = True,
     all_gpu_history: Sequence[Optional[int]] = (),
     gpu_histories: Optional[dict[tuple[str, str], Sequence[Optional[int]]]] = None,
+    version: str = "0.1.0",
 ) -> str:
     del all_gpu_history, gpu_histories
     width = max(79, width or _terminal_width())
@@ -46,33 +47,196 @@ def render_snapshot(
     avg_util = _avg(gpu.gpu_util_percent for gpu in gpus)
     avg_mem = _avg(gpu.mem_util_percent for gpu in gpus)
 
-    lines = [
-        time.strftime("%a %b %d %H:%M:%S %Y", time.localtime(snapshot.generated_at)),
-        _clip(
-            _style("SLURM-GPU-TOP", "bold", color)
-            + "  "
-            + _style(
-                f"ALL GPUs util={_percent(avg_util)} mem={_percent(avg_mem)} "
-                f"jobs={snapshot.job_count} nodes={len(snapshot.nodes)} gpus={snapshot.gpu_count}",
-                "cyan",
-                color,
-            ),
-            width,
-        ),
-    ]
+    lines = [time.strftime("%a %b %d %H:%M:%S %Y", time.localtime(snapshot.generated_at))]
 
     if snapshot.errors:
+        lines.insert(0, _style(f"SGTOP {version}", "bold", color))
         lines.extend(_style(f"Slurm error: {error}", "bright_red", color) for error in snapshot.errors)
         return "\n".join(lines)
 
     if not snapshot.nodes:
+        lines.insert(0, _style(f"SGTOP {version}", "bold", color))
         lines.append(_style("No running GPU-backed Slurm jobs found.", "yellow", color))
         return "\n".join(lines)
 
-    for node in snapshot.nodes:
-        lines.append("")
-        lines.extend(_render_node(node, width=width, color=color, unicode=unicode))
+    lines.extend(
+        _cluster_gpu_box(
+            snapshot,
+            width=width,
+            color=color,
+            unicode=unicode,
+            version=version,
+            avg_util=avg_util,
+            avg_mem=avg_mem,
+        )
+    )
+    lines.append("")
+    lines.extend(_cluster_process_box(snapshot, width=width, color=color, unicode=unicode))
     return "\n".join(lines)
+
+
+def _cluster_gpu_box(
+    snapshot: ClusterSnapshot,
+    *,
+    width: int,
+    color: bool,
+    unicode: bool,
+    version: str,
+    avg_util: Optional[float],
+    avg_mem: Optional[float],
+) -> Iterable[str]:
+    chars = _box_chars(unicode)
+    w = min(width, 140)
+    inner = w - 2
+    c1, c2, c3 = _gpu_col_widths(inner)
+    c4 = inner - c1 - c2 - c3 - 3
+    sample_host = next(
+        (node.host for node in snapshot.nodes if node.host.driver_version or node.host.cuda_version),
+        HostStats(),
+    )
+    title = _fit_right(
+        _style(f"SGTOP {version}", "bold", color),
+        (
+            f"Driver Version: {sample_host.driver_version or 'N/A'}      "
+            f"CUDA Driver Version: {sample_host.cuda_version or 'N/A'}      "
+            f"ALL GPUs util={_percent(avg_util)} mem={_percent(avg_mem)}"
+        ),
+        inner,
+    )
+
+    yield chars["tl"] + chars["h2"] * inner + chars["tr"]
+    yield _box_line(title, inner, chars)
+    for node_idx, node in enumerate(snapshot.nodes):
+        yield chars["ml_bold"] + chars["h2"] * inner + chars["mr_bold"]
+        yield _box_line(_node_status(node, color=color), inner, chars)
+        if node.error:
+            yield _box_line(_style(f"! {node.error}", "bright_red", color), inner, chars)
+            continue
+        yield _joint_line(chars, (c1, c2, c3, c4), "top")
+        yield _row(
+            ("GPU  Name        Persistence-M", "Bus-Id        Disp.A", "MIG M.   Uncorr. ECC", ""),
+            (c1, c2, c3, c4),
+            chars,
+        )
+        yield _row(
+            ("Fan  Temp  Perf  Pwr:Usage/Cap", "        Memory-Usage", "GPU-Util  Compute M.", ""),
+            (c1, c2, c3, c4),
+            chars,
+        )
+        yield _joint_line(chars, (c1, c2, c3, c4), "mid_bold")
+        if not node.gpus:
+            yield _box_line(_style("No GPUs reported by nvidia-smi.", "yellow", color), inner, chars)
+            continue
+        for gpu_idx, gpu in enumerate(sorted(node.gpus, key=lambda item: item.index)):
+            if gpu_idx:
+                yield _joint_line(chars, (c1, c2, c3, c4), "mid")
+            yield from _gpu_rows(gpu, (c1, c2, c3, c4), chars, color=color, unicode=unicode)
+    yield chars["bl"] + chars["h2"] * inner + chars["br"]
+
+
+def _gpu_col_widths(inner: int) -> tuple[int, int, int]:
+    if inner >= 118:
+        return 31, 22, 22
+    if inner >= 98:
+        return 28, 19, 19
+    return 24, 16, 16
+
+
+def _gpu_rows(
+    gpu: GPUDevice,
+    widths: Sequence[int],
+    chars: dict[str, str],
+    *,
+    color: bool,
+    unicode: bool,
+) -> Iterable[str]:
+    mem_percent = _memory_percent(gpu)
+    util = gpu.gpu_util_percent
+    yield _row(
+        (
+            f"{gpu.index:>3}  {_gpu_name(gpu.name):<17.17} {_short(_on_off(gpu.persistence_mode), 3):>8}",
+            f"{_short(gpu.pci_bus_id, 16):<16} {_short(_on_off(gpu.display_active), 3):>3}",
+            f"{_short(gpu.mig_mode, 8):<8} {_na_int(gpu.ecc_errors):>11}",
+            _bar_stat("MEM", mem_percent, _mem_usage_short(gpu), color=color, unicode=unicode),
+        ),
+        widths,
+        chars,
+    )
+    yield _row(
+        (
+            f"{_fan(gpu):>3}  {_temp(gpu):>4} {_short(gpu.performance_state, 4):>4} {_power(gpu):>13}",
+            f"{_mem_usage(gpu):>21}",
+            f"{_percent(util):>7} {_short(gpu.compute_mode, 12):>12}",
+            _bar_stat("UTL", util, f"{_percent(util):>4} @ {_clock(gpu)}", color=color, unicode=unicode),
+        ),
+        widths,
+        chars,
+    )
+
+
+def _node_status(node: NodeSnapshot, *, color: bool) -> str:
+    host = node.host
+    host_bits = []
+    if host.cpu_percent is not None:
+        host_bits.append(f"CPU {_percent(host.cpu_percent)}")
+    if host.memory_percent is not None:
+        host_bits.append(f"MEM {_percent(host.memory_percent)}")
+    if host.load_average:
+        host_bits.append("LOAD " + " ".join(f"{value:.2f}" for value in host.load_average))
+    if host.uptime_seconds is not None:
+        host_bits.append(f"UP {_uptime(host.uptime_seconds)}")
+    suffix = f" -- {'  '.join(host_bits)}" if host_bits else ""
+    return (
+        _style(f"[{node.node}]", "bright_cyan", color)
+        + " "
+        + _style(_format_jobs(node.jobs), "yellow", color)
+        + suffix
+    )
+
+
+def _cluster_process_box(
+    snapshot: ClusterSnapshot,
+    *,
+    width: int,
+    color: bool,
+    unicode: bool,
+) -> Iterable[str]:
+    chars = _box_chars(unicode)
+    w = min(width, 140)
+    inner = w - 2
+    rows = [
+        (node, gpu, proc)
+        for node in snapshot.nodes
+        for gpu in sorted(node.gpus, key=lambda item: item.index)
+        for proc in gpu.processes
+    ]
+    yield chars["tl"] + chars["h2"] * inner + chars["tr"]
+    yield _box_line(
+        _fit_right("Processes:", f"{snapshot.job_count} jobs across {len(snapshot.nodes)} nodes", inner),
+        inner,
+        chars,
+    )
+    yield _box_line("NODE          GPU     PID      USER  GPU-MEM %SM %GMBW  %CPU  %MEM     TIME  COMMAND", inner, chars)
+    yield chars["ml_bold"] + chars["h2"] * inner + chars["mr_bold"]
+    if not rows:
+        yield _box_line(_style("No running GPU compute processes found.", "bright_black", color), inner, chars)
+    for idx, (node, gpu, proc) in enumerate(rows):
+        if idx:
+            yield chars["ml"] + chars["h1"] * inner + chars["mr"]
+        yield _box_line(_format_cluster_process_row(node, gpu, proc, inner), inner, chars)
+    yield chars["bl"] + chars["h2"] * inner + chars["br"]
+
+
+def _format_cluster_process_row(node: NodeSnapshot, gpu: GPUDevice, proc: GPUProcess, width: int) -> str:
+    command = proc.command or proc.name
+    fixed = (
+        f"{node.node:<12} {gpu.index:>3}  {proc.pid:>6} {_short(proc.type, 3):<3} "
+        f"{_short(proc.user, 5):<5} {_value(proc.used_memory_mib, 'MiB'):>8} "
+        f"{_na_int(proc.sm_util_percent):>3} {_na_int(proc.mem_bw_util_percent):>5} "
+        f"{_na_float(proc.cpu_percent):>5} {_na_float(proc.mem_percent):>5} "
+        f"{(proc.elapsed or 'N/A'):>8}  "
+    )
+    return fixed + _clip_visible(command, max(0, width - _visible_len(fixed)))
 
 
 def _render_node(node: NodeSnapshot, *, width: int, color: bool, unicode: bool) -> Iterable[str]:

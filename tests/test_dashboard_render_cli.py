@@ -1,5 +1,6 @@
 import json
 
+import slurm_gpu_top.cli as cli_module
 from slurm_gpu_top.cli import main
 from slurm_gpu_top.dashboard import build_snapshot
 from slurm_gpu_top.history import UtilizationHistory
@@ -109,16 +110,17 @@ def test_render_snapshot_rich_mode_has_color_graphs_averages_and_process_table()
 
     assert "\x1b[" in rendered
     assert "ALL GPUs" in rendered
-    assert "NVITOP" in rendered
+    assert "SGTOP 0.1.0" in rendered
     assert "Driver Version" in rendered
     assert "Memory-Usage" in rendered
     assert "GPU-Util" in rendered
     assert "MEM:" in rendered
     assert "UTL:" in rendered
-    assert "CPU:" in rendered
-    assert "SWP:" in rendered
+    assert "CPU 41%" in rendered
+    assert "MEM 12%" in rendered
     assert "Processes" in rendered
     assert "python train.py" in rendered
+    assert rendered.count("GPU  Name        Persistence-M") == 1
 
 
 def test_render_snapshot_ascii_fallback_keeps_graph_visible():
@@ -133,7 +135,7 @@ def test_render_snapshot_ascii_fallback_keeps_graph_visible():
     )
 
     assert "\x1b[" not in rendered
-    assert "NVITOP" in rendered
+    assert "SGTOP 0.1.0" in rendered
     assert "MEM:" in rendered
     assert "UTL:" in rendered
     assert "#" in rendered
@@ -153,10 +155,30 @@ def test_render_snapshot_compact_width_keeps_history_graph_visible():
         gpu_histories={("gpu001", "GPU-a"): (0, 25, 50, 75)},
     )
 
-    assert "NVITOP" in rendered
+    assert "SGTOP 0.1.0" in rendered
     assert "MEM:" in rendered
     assert "UTL:" in rendered
     assert "A100" in rendered
+
+
+def test_render_snapshot_uses_one_gpu_table_grouped_by_node():
+    first = _single_gpu_snapshot(util=75, mem=50)
+    second_node = NodeSnapshot(
+        node="gpu002",
+        jobs=first.nodes[0].jobs,
+        gpus=first.nodes[0].gpus,
+        host=first.nodes[0].host,
+    )
+    snapshot = ClusterSnapshot(nodes=(first.nodes[0], second_node), generated_at=10)
+
+    rendered = render_snapshot(snapshot, width=120, color=False, unicode=True)
+
+    assert rendered.count("SGTOP 0.1.0") == 1
+    assert rendered.count("SGTOP 0.1.0") == 1
+    assert "[gpu001]" in rendered
+    assert "[gpu002]" in rendered
+    assert rendered.index("[gpu001]") < rendered.index("GPU  Name")
+    assert rendered.index("[gpu002]") > rendered.index("UTL:")
 
 
 def test_render_snapshot_handles_empty_state():
@@ -261,3 +283,19 @@ def test_cli_mock_json_smoke(tmp_path, capsys):
 
     assert main(["--mock-json", str(snapshot_path)]) == 0
     assert "gpu001" in capsys.readouterr().out
+
+
+def test_cli_live_mode_refreshes_one_screen(monkeypatch, capsys):
+    monkeypatch.setattr(
+        cli_module,
+        "build_snapshot",
+        lambda config: ClusterSnapshot(generated_at=10),
+    )
+
+    def stop_after_first_sleep(_interval):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(cli_module.time, "sleep", stop_after_first_sleep)
+
+    assert main(["--interval", "0.1", "--color", "never"]) == 130
+    assert capsys.readouterr().out.startswith("\033[H\033[J")
