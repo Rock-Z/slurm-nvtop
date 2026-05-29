@@ -250,6 +250,12 @@ def test_render_snapshot_omits_repeated_gpu_label_block_and_draws_node_history()
     lines = rendered.splitlines()
     second_node_line = next(idx for idx, line in enumerate(lines) if "[gpu002]" in line)
     assert lines[second_node_line + 1].startswith("├")
+    assert lines[second_node_line - 1].startswith("╞")
+    assert "╧" in lines[second_node_line - 1]
+    history_node_line = next(idx for idx, line in enumerate(lines) if "gpu001" in line and "gpu002" in line)
+    history_line = lines[history_node_line - 1]
+    assert "╧" in history_line
+    assert "╤" in history_line
 
 
 def test_render_snapshot_respects_terminal_height():

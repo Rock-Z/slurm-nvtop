@@ -118,48 +118,56 @@ def _cluster_gpu_box(
     yield chars["tl"] + chars["h2"] * inner + chars["tr"]
     yield _box_line(title, inner, chars)
     labels_emitted = False
+    current_columns: tuple[int, ...] | None = None
+    gpu_widths = (c1, c2, c3, c4)
     for node in snapshot.nodes:
-        yield chars["ml_bold"] + chars["h2"] * inner + chars["mr_bold"]
+        if current_columns is None:
+            yield chars["ml_bold"] + chars["h2"] * inner + chars["mr_bold"]
+        else:
+            yield _column_transition_line(chars, current_columns, ())
+            current_columns = None
         yield _box_line(_node_status(node, color=color), inner, chars)
         if node.error:
             yield _box_line(_style(f"! {node.error}", "bright_red", color), inner, chars)
             continue
-        yield _joint_line(chars, (c1, c2, c3, c4), "top")
+        yield _joint_line(chars, gpu_widths, "top")
         if not labels_emitted:
             yield _row(
                 ("GPU  Name        Persistence-M", "MIG M.   Uncorr. ECC", "Memory-Usage", ""),
-                (c1, c2, c3, c4),
+                gpu_widths,
                 chars,
             )
             yield _row(
                 ("Fan  Temp  Perf  Pwr:Usage/Cap", "", "GPU-Util  Compute M.", ""),
-                (c1, c2, c3, c4),
+                gpu_widths,
                 chars,
             )
-            yield _joint_line(chars, (c1, c2, c3, c4), "mid_bold")
+            yield _joint_line(chars, gpu_widths, "mid_bold")
             labels_emitted = True
         if not node.gpus:
             yield _box_line(_style("No GPUs reported by nvidia-smi.", "yellow", color), inner, chars)
             continue
         for gpu_idx, gpu in enumerate(sorted(node.gpus, key=lambda item: item.index)):
             if gpu_idx:
-                yield _joint_line(chars, (c1, c2, c3, c4), "mid")
-            yield from _gpu_rows(gpu, (c1, c2, c3, c4), chars, color=color, unicode=unicode)
-    history_rows = list(
-        _node_history_rows(
-            snapshot,
-            width=inner,
-            chars=chars,
-            color=color,
-            unicode=unicode,
-            node_util_histories=node_util_histories,
-            node_mem_histories=node_mem_histories,
-        ),
+                yield _joint_line(chars, gpu_widths, "mid")
+            yield from _gpu_rows(gpu, gpu_widths, chars, color=color, unicode=unicode)
+        current_columns = gpu_widths
+    history_widths, history_rows = _node_history_layout(
+        snapshot,
+        width=inner,
+        color=color,
+        unicode=unicode,
+        node_util_histories=node_util_histories,
+        node_mem_histories=node_mem_histories,
     )
     if history_rows:
-        yield chars["ml_bold"] + chars["h2"] * inner + chars["mr_bold"]
-        yield from history_rows
-    yield chars["bl"] + chars["h2"] * inner + chars["br"]
+        yield _column_transition_line(chars, current_columns or (), history_widths)
+        yield from _node_history_rows(history_rows, history_widths, chars)
+        current_columns = tuple(history_widths)
+    if current_columns is None:
+        yield chars["bl"] + chars["h2"] * inner + chars["br"]
+    else:
+        yield _joint_line(chars, current_columns, "bottom")
 
 
 def _gpu_col_widths(inner: int) -> tuple[int, int, int]:
@@ -222,23 +230,22 @@ def _node_status(node: NodeSnapshot, *, color: bool) -> str:
     )
 
 
-def _node_history_rows(
+def _node_history_layout(
     snapshot: ClusterSnapshot,
     *,
     width: int,
-    chars: dict[str, str],
     color: bool,
     unicode: bool,
     node_util_histories: Mapping[str, Sequence[Optional[int]]],
     node_mem_histories: Mapping[str, Sequence[Optional[int]]],
-) -> Iterable[str]:
+) -> tuple[list[int], list[list[str]]]:
     nodes = [
         node
         for node in snapshot.nodes
         if node.gpus and (node.node in node_util_histories or node.node in node_mem_histories)
     ]
     if not nodes:
-        return
+        return [], []
 
     inner = width
     max_cells = max(1, (inner + 1) // 18)
@@ -249,7 +256,7 @@ def _node_history_rows(
         node_labels[-1] = f"{node_labels[-1]} (+{omitted})"
     cell_widths = _split_widths(inner, len(nodes))
 
-    cells = [
+    return cell_widths, [
         _node_history_cell(
             node_labels[idx],
             width=cell_widths[idx],
@@ -261,6 +268,13 @@ def _node_history_rows(
         )
         for idx, node in enumerate(nodes)
     ]
+
+
+def _node_history_rows(
+    cells: Sequence[Sequence[str]],
+    cell_widths: Sequence[int],
+    chars: dict[str, str],
+) -> Iterable[str]:
     row_count = max(len(cell) for cell in cells)
     for row_idx in range(row_count):
         yield _multi_cell_row(
@@ -738,6 +752,40 @@ def _joint_line(chars: dict[str, str], widths: Sequence[int], kind: str) -> str:
     return left + joint.join(fill * width for width in widths) + right
 
 
+def _column_transition_line(
+    chars: dict[str, str],
+    upper_widths: Sequence[int],
+    lower_widths: Sequence[int],
+) -> str:
+    width = sum(upper_widths) + max(0, len(upper_widths) - 1)
+    if not upper_widths:
+        width = sum(lower_widths) + max(0, len(lower_widths) - 1)
+    upper_joints = _column_joint_positions(upper_widths)
+    lower_joints = _column_joint_positions(lower_widths)
+    positions = upper_joints | lower_joints
+    body = []
+    for pos in range(1, width + 1):
+        if pos in positions:
+            if pos in upper_joints and pos in lower_joints:
+                body.append(chars["mj_bold"])
+            elif pos in upper_joints:
+                body.append(chars["bj"])
+            else:
+                body.append(chars["tj_bold"])
+        else:
+            body.append(chars["h2"])
+    return chars["ml_bold"] + "".join(body) + chars["mr_bold"]
+
+
+def _column_joint_positions(widths: Sequence[int]) -> set[int]:
+    positions = set()
+    offset = 0
+    for width in widths[:-1]:
+        offset += width + 1
+        positions.add(offset)
+    return positions
+
+
 def _simple_box(lines: Sequence[str], width: int, *, unicode: bool) -> Iterable[str]:
     chars = _box_chars(unicode)
     inner = min(width, 120) - 2
@@ -761,6 +809,7 @@ def _box_chars(unicode: bool) -> dict[str, str]:
             "ml_bold": "+",
             "mr_bold": "+",
             "tj": "+",
+            "tj_bold": "+",
             "mj": "+",
             "mj_bold": "+",
             "bj": "+",
@@ -780,6 +829,7 @@ def _box_chars(unicode: bool) -> dict[str, str]:
         "ml_bold": "╞",
         "mr_bold": "╡",
         "tj": "┬",
+        "tj_bold": "╤",
         "mj": "┼",
         "mj_bold": "╪",
         "bj": "╧",
