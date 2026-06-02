@@ -1,4 +1,10 @@
-from slurm_gpu_top.gpu import PROCESS_MARKER, parse_node_probe_output, parse_nvidia_smi_output, poll_node_gpus
+from slurm_gpu_top.gpu import (
+    CGROUP_JOB_ID_MARKER,
+    PROCESS_MARKER,
+    parse_node_probe_output,
+    parse_nvidia_smi_output,
+    poll_node_gpus,
+)
 from slurm_gpu_top.models import CommandResult
 
 
@@ -51,6 +57,8 @@ def test_parse_node_probe_output_with_nvitop_style_stats():
         "0 514876 C 6 2 - - python\n"
         "__SLURM_GPU_TOP_PS__\n"
         "514876 ez275 595.5 1.1 2:13:03 /path/train.py\n"
+        f"{CGROUP_JOB_ID_MARKER}\n"
+        "514876 101\n"
     )
 
     gpus, host = parse_node_probe_output("gpu001", output)
@@ -73,6 +81,7 @@ def test_parse_node_probe_output_with_nvitop_style_stats():
     assert proc.sm_util_percent == 6
     assert proc.mem_bw_util_percent == 2
     assert proc.command == "/path/train.py"
+    assert proc.slurm_job_id == "101"
 
 
 def test_parse_nvidia_smi_output_rejects_malformed_gpu_rows():

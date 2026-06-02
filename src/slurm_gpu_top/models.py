@@ -29,6 +29,7 @@ class GPUProcess:
     name: str
     used_memory_mib: Optional[int]
     gpu_uuid: str
+    slurm_job_id: str = ""
     type: str = "C"
     user: str = ""
     cpu_percent: Optional[float] = None

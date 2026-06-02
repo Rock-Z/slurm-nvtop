@@ -154,7 +154,7 @@ def _cluster_gpu_box(
         chars,
     )
     yield _row(
-        ("Fan  Temp  Perf  Pwr:Usage/Cap", "        Memory-Usage", ""),
+        (_gpu_detail_header(gpu_widths[0]), "        Memory-Usage", ""),
         gpu_widths,
         chars,
     )
@@ -168,17 +168,19 @@ def _cluster_gpu_box(
             yield _column_transition_line(chars, current_columns, ())
             current_columns = None
         node_started = True
-        yield _box_line(_node_status(node, color=color), inner, chars)
         if node.error:
+            yield _box_line(_status_line(node, node.jobs, color=color), inner, chars)
             yield _box_line(_style(f"! {node.error}", "bright_red", color), inner, chars)
             continue
-        yield _joint_line(chars, gpu_widths, "top")
         if not node.gpus:
+            yield _box_line(_status_line(node, node.jobs, color=color), inner, chars)
             yield _box_line(_style("No GPUs reported by nvidia-smi.", "yellow", color), inner, chars)
             continue
         for gpu_idx, gpu in enumerate(sorted(node.gpus, key=lambda item: item.index)):
             if gpu_idx:
-                yield _joint_line(chars, gpu_widths, "mid")
+                yield _column_transition_line(chars, gpu_widths, ())
+            yield _box_line(_status_line(node, _jobs_for_gpu(node, gpu), color=color, empty=""), inner, chars)
+            yield _joint_line(chars, gpu_widths, "top")
             yield from _gpu_rows(gpu, gpu_widths, chars, color=color, unicode=unicode)
         current_columns = gpu_widths
     history_widths, history_rows = _node_history_layout(
@@ -219,7 +221,7 @@ def _gpu_rows(
     util = gpu.gpu_util_percent
     yield _row(
         (
-            f"{gpu.index:>3}  {_gpu_name(gpu.name):<17.17} {_short(_on_off(gpu.persistence_mode), 3):>8}",
+            _gpu_identity_row(gpu, widths[0]),
             f"{_short(gpu.mig_mode, 8):<8} {_na_int(gpu.ecc_errors):>11}",
             _bar_stat(
                 "MEM",
@@ -236,7 +238,7 @@ def _gpu_rows(
     )
     yield _row(
         (
-            f"{_fan(gpu):>3}  {_temp(gpu):>4} {_short(gpu.performance_state, 4):>4} {_power(gpu):>13}",
+            _gpu_detail_row(gpu, widths[0]),
             f"{_mem_usage(gpu):>21}",
             _bar_stat(
                 "UTL",
@@ -253,7 +255,7 @@ def _gpu_rows(
     )
 
 
-def _node_status(node: NodeSnapshot, *, color: bool) -> str:
+def _status_line(node: NodeSnapshot, jobs: Iterable[SlurmJob], *, color: bool, empty: str = "unknown") -> str:
     host = node.host
     host_bits = []
     if host.cpu_percent is not None:
@@ -265,12 +267,9 @@ def _node_status(node: NodeSnapshot, *, color: bool) -> str:
     if host.uptime_seconds is not None:
         host_bits.append(f"UP {_uptime(host.uptime_seconds)}")
     suffix = f" -- {'  '.join(host_bits)}" if host_bits else ""
-    return (
-        _style(f"[{node.node}]", "bright_cyan", color)
-        + " "
-        + _style(_format_jobs(node.jobs), "yellow", color)
-        + suffix
-    )
+    jobs_text = _format_jobs(jobs, empty=empty)
+    job_segment = f" {_style(jobs_text, 'yellow', color)}" if jobs_text else ""
+    return _style(f"[{node.node}]", "bright_cyan", color) + job_segment + suffix
 
 
 def _node_history_layout(
@@ -670,7 +669,7 @@ def _gpu_box(
     yield _box_line(_clip_visible(title, inner), inner, chars)
     yield _joint_line(chars, (c1, c2, c3), "top")
     yield _row(("GPU  Name        Persistence-M", "MIG M.   Uncorr. ECC", ""), (c1, c2, c3), chars)
-    yield _row(("Fan  Temp  Perf  Pwr:Usage/Cap", "        Memory-Usage", ""), (c1, c2, c3), chars)
+    yield _row((_gpu_detail_header(c1), "        Memory-Usage", ""), (c1, c2, c3), chars)
     yield _joint_line(chars, (c1, c2, c3), "mid")
 
     if not gpus:
@@ -682,7 +681,7 @@ def _gpu_box(
         util = gpu.gpu_util_percent
         yield _row(
             (
-                f"{gpu.index:>3}  {_gpu_name(gpu.name):<17.17} {_short(_on_off(gpu.persistence_mode), 3):>8}",
+                _gpu_identity_row(gpu, c1),
                 f"{_short(gpu.mig_mode, 8):<8} {_na_int(gpu.ecc_errors):>11}",
                 _bar_stat(
                     "MEM",
@@ -699,7 +698,7 @@ def _gpu_box(
         )
         yield _row(
             (
-                f"{_fan(gpu):>3}  {_temp(gpu):>4} {_short(gpu.performance_state, 4):>4} {_power(gpu):>13}",
+                _gpu_detail_row(gpu, c1),
                 f"{_mem_usage(gpu):>21}",
                 _bar_stat(
                     "UTL",
@@ -771,9 +770,14 @@ def _format_process_row(gpu: GPUDevice, proc: GPUProcess, width: int) -> str:
     return fixed + _clip_visible(command, max(0, width - _visible_len(fixed)))
 
 
-def _format_jobs(jobs: Iterable[SlurmJob]) -> str:
+def _format_jobs(jobs: Iterable[SlurmJob], *, empty: str = "unknown") -> str:
     parts = [f"{job.job_id} {job.user}/{job.name} {job.elapsed}" for job in jobs]
-    return ", ".join(parts) if parts else "unknown"
+    return ", ".join(parts) if parts else empty
+
+
+def _jobs_for_gpu(node: NodeSnapshot, gpu: GPUDevice) -> tuple[SlurmJob, ...]:
+    job_ids = {proc.slurm_job_id for proc in gpu.processes if proc.slurm_job_id}
+    return tuple(job for job in node.jobs if job.job_id in job_ids)
 
 
 def _bar_stat(
@@ -975,6 +979,27 @@ def _human_mib(mib: Optional[int]) -> str:
 
 def _fan(gpu: GPUDevice) -> str:
     return "N/A" if gpu.fan_speed_percent is None else f"{gpu.fan_speed_percent}%"
+
+
+def _gpu_identity_row(gpu: GPUDevice, width: int) -> str:
+    prefix = f"{gpu.index:>3}  "
+    mode = _short(_on_off(gpu.persistence_mode), 3)
+    mode_width = min(7, max(len(mode), width - _visible_len(prefix) - 1))
+    name_width = max(0, width - _visible_len(prefix) - mode_width - 2)
+    return f"{prefix}{_gpu_name(gpu.name):<{name_width}.{name_width}} {mode:>{mode_width}}"
+
+
+def _gpu_detail_row(gpu: GPUDevice, width: int) -> str:
+    prefix = f"{_fan(gpu):>3}  {_temp(gpu):>4} {_short(gpu.performance_state, 4):>4}"
+    power_width = max(0, width - _visible_len(prefix) - 2)
+    return f"{prefix} {_power(gpu):>{power_width}}"
+
+
+def _gpu_detail_header(width: int) -> str:
+    prefix = "Fan  Temp  Perf"
+    label = "Pwr:Usage/Cap"
+    power_width = max(0, width - len(prefix) - 2)
+    return f"{prefix} {label:>{power_width}}"
 
 
 def _temp(gpu: GPUDevice) -> str:

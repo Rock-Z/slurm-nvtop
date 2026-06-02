@@ -12,6 +12,7 @@ GPU_MARKER = "__SLURM_GPU_TOP_GPUS__"
 PROCESS_MARKER = "__SLURM_GPU_TOP_PROCESSES__"
 PMON_MARKER = "__SLURM_GPU_TOP_PMON__"
 PS_MARKER = "__SLURM_GPU_TOP_PS__"
+CGROUP_JOB_ID_MARKER = "__SLURM_GPU_TOP_CGROUP_JOB_IDS__"
 
 REMOTE_NVIDIA_SMI_QUERY = (
     f"printf '{META_MARKER}\\n'; "
@@ -44,7 +45,12 @@ REMOTE_NVIDIA_SMI_QUERY = (
     f"printf '\\n{PS_MARKER}\\n'; "
     "pids=$(nvidia-smi --query-compute-apps=pid --format=csv,noheader,nounits 2>/dev/null | "
     "awk 'NF{printf \"%s,\", $1}' | sed 's/,$//'); "
-    "if [ -n \"$pids\" ]; then ps -o pid=,user=,pcpu=,pmem=,etime=,args= -p \"$pids\" 2>/dev/null; fi"
+    "if [ -n \"$pids\" ]; then ps -o pid=,user=,pcpu=,pmem=,etime=,args= -p \"$pids\" 2>/dev/null; fi; "
+    f"printf '\\n{CGROUP_JOB_ID_MARKER}\\n'; "
+    "if [ -n \"$pids\" ]; then for pid in $(printf '%s' \"$pids\" | tr ',' ' '); do "
+    "job_id=$(sed -n 's|.*/job_\\([0-9][0-9_]*\\).*|\\1|p' \"/proc/$pid/cgroup\" 2>/dev/null | head -n1); "
+    "printf '%s %s\\n' \"$pid\" \"$job_id\"; "
+    "done; fi"
 )
 
 
@@ -95,6 +101,7 @@ def parse_node_probe_output(node: str, output: str) -> Tuple[Tuple[GPUDevice, ..
     process_text = sections.get(PROCESS_MARKER, "")
     pmon_text = sections.get(PMON_MARKER, "")
     ps_text = sections.get(PS_MARKER, "")
+    job_id_text = sections.get(CGROUP_JOB_ID_MARKER, "")
 
     if gpu_text is None:
         # Backward-compatible parser for old fixture strings.
@@ -105,6 +112,7 @@ def parse_node_probe_output(node: str, output: str) -> Tuple[Tuple[GPUDevice, ..
 
     pmon_by_pid_gpu = parse_pmon_output(pmon_text)
     ps_by_pid = parse_ps_output(ps_text)
+    job_id_by_pid = parse_process_job_ids(job_id_text)
 
     processes_by_uuid: Dict[str, List[GPUProcess]] = {}
     for row in _csv_rows(process_text):
@@ -121,6 +129,7 @@ def parse_node_probe_output(node: str, output: str) -> Tuple[Tuple[GPUDevice, ..
             name=row[1].strip(),
             used_memory_mib=_parse_int(row[2]),
             gpu_uuid=uuid,
+            slurm_job_id=job_id_by_pid.get(pid, ""),
             type=pmon_info.get("type") or "C",
             user=ps_info.get("user", ""),
             cpu_percent=_parse_float(ps_info.get("cpu")),
@@ -210,6 +219,21 @@ def parse_ps_output(text: str) -> Dict[int, Dict[str, str]]:
     return rows
 
 
+def parse_process_job_ids(text: str) -> Dict[int, str]:
+    rows: Dict[int, str] = {}
+    for line in text.splitlines():
+        parts = line.strip().split(None, 1)
+        if len(parts) < 2:
+            continue
+        pid = _parse_int(parts[0])
+        if pid is None:
+            continue
+        job_id = parts[1].strip()
+        if job_id:
+            rows[pid] = job_id
+    return rows
+
+
 def _parse_rich_gpu_row(
     node: str,
     row: List[str],
@@ -270,7 +294,7 @@ def _parse_legacy_gpu_row(
 
 
 def _split_sections(output: str) -> Dict[str, str]:
-    markers = {META_MARKER, GPU_MARKER, PROCESS_MARKER, PMON_MARKER, PS_MARKER}
+    markers = {META_MARKER, GPU_MARKER, PROCESS_MARKER, PMON_MARKER, PS_MARKER, CGROUP_JOB_ID_MARKER}
     sections: Dict[str, List[str]] = {}
     current: Optional[str] = None
     for line in output.splitlines():

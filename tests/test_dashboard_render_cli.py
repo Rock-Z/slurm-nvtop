@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace
 
 import slurm_gpu_top.cli as cli_module
 from slurm_gpu_top.cli import main
@@ -95,7 +96,9 @@ def test_render_snapshot_groups_by_node_and_lists_processes():
                 0,
                 "0, GPU-a, NVIDIA A100, 75, 50, 40000, 81920, 60, 250, 400\n"
                 "__SLURM_GPU_TOP_PROCESSES__\n"
-                "1234, python train.py, 39000, GPU-a\n",
+                "1234, python train.py, 39000, GPU-a\n"
+                "__SLURM_GPU_TOP_CGROUP_JOB_IDS__\n"
+                "1234 101\n",
             )
         raise AssertionError(command)
 
@@ -106,6 +109,23 @@ def test_render_snapshot_groups_by_node_and_lists_processes():
     assert "101 ez275/train" in rendered
     assert "A100" in rendered
     assert "1234" in rendered
+
+
+def test_render_snapshot_uses_gpu_process_job_id_for_gpu_status():
+    rendered = render_snapshot(_multi_job_gpu_snapshot(process_job_id="202"), width=120, color=False, unicode=True)
+    node_line = next(line for line in rendered.splitlines() if "[gpu001]" in line)
+
+    assert "202 ez275/second" in node_line
+    assert "101 ez275/first" not in node_line
+
+
+def test_render_snapshot_does_not_fall_back_to_node_jobs_for_unmatched_gpu():
+    rendered = render_snapshot(_multi_job_gpu_snapshot(process_job_id=""), width=120, color=False, unicode=True)
+    node_line = next(line for line in rendered.splitlines() if "[gpu001]" in line)
+
+    assert "ez275/" not in node_line
+    assert "101" not in node_line
+    assert "202" not in node_line
 
 
 def test_render_snapshot_rich_mode_has_color_graphs_averages_and_process_table():
@@ -130,8 +150,8 @@ def test_render_snapshot_rich_mode_has_color_graphs_averages_and_process_table()
     assert "Memory-Usage" in rendered
     assert "GPU-Util" not in rendered
     assert "Bus-Id" not in rendered
-    assert "A100                    On│Disabled           0  │MEM:" in rendered
-    assert "N/A   60C   P0   250W / 400W   │  40000MiB / 80.00GiB │UTL:" in rendered
+    assert "A100                   On │Disabled           0  │MEM:" in rendered
+    assert "N/A   60C   P0     250W / 400W │  40000MiB / 80.00GiB │UTL:" in rendered
     assert "MEM:" in rendered
     assert "UTL:" in rendered
     assert "CPU 41%" in rendered
@@ -148,6 +168,34 @@ def test_render_snapshot_aligns_mem_and_util_suffixes():
     util_line = next(line for line in lines if "│UTL:" in line)
 
     assert mem_line.index("40000MiB") == util_line.index("83% @ 1980MHz")
+
+
+def test_render_snapshot_right_aligns_power_usage_column():
+    rendered = render_snapshot(_single_gpu_snapshot(util=83, mem=40), width=120, color=False, unicode=True)
+    lines = rendered.splitlines()
+    header_line = next(line for line in lines if "Pwr:Usage/Cap" in line)
+    detail_line = next(line for line in lines if "250W / 400W" in line)
+
+    header_end = header_line.index("Pwr:Usage/Cap") + len("Pwr:Usage/Cap")
+    detail_end = detail_line.index("250W / 400W") + len("250W / 400W")
+
+    assert header_end == detail_end
+    assert header_line[header_end] == " "
+    assert detail_line[detail_end] == " "
+
+
+def test_render_snapshot_right_pads_persistence_mode_column():
+    rendered = render_snapshot(_single_gpu_snapshot(util=83, mem=40), width=120, color=False, unicode=True)
+    lines = rendered.splitlines()
+    header_line = next(line for line in lines if "Persistence-M" in line)
+    detail_line = next(line for line in lines if "A100" in line)
+
+    header_end = header_line.index("Persistence-M") + len("Persistence-M")
+    detail_end = detail_line.index("On") + len("On")
+
+    assert header_end == detail_end
+    assert header_line[header_end] == " "
+    assert detail_line[detail_end] == " "
 
 
 def test_gpu_header_data_separator_is_single_line():
@@ -533,6 +581,18 @@ def _single_gpu_snapshot(*, util: int, mem: int) -> ClusterSnapshot:
     )
 
 
+def _multi_job_gpu_snapshot(*, process_job_id: str) -> ClusterSnapshot:
+    snapshot = _single_gpu_snapshot(util=75, mem=50)
+    node = snapshot.nodes[0]
+    gpu = node.gpus[0]
+    proc = replace(gpu.processes[0], slurm_job_id=process_job_id)
+    jobs = (
+        replace(node.jobs[0], job_id="101", name="first", elapsed="1:00"),
+        replace(node.jobs[0], job_id="202", name="second", elapsed="2:00"),
+    )
+    return replace(snapshot, nodes=(replace(node, jobs=jobs, gpus=(replace(gpu, processes=(proc,)),)),))
+
+
 def _single_gpu_runner(*, util: int, mem: int):
     def runner(args, timeout):
         command = tuple(args)
@@ -567,7 +627,9 @@ def _single_gpu_runner(*, util: int, mem: int):
                 "# gpu pid type sm mem enc dec command\n"
                 "0 1234 C 6 2 - - python\n"
                 "__SLURM_GPU_TOP_PS__\n"
-                "1234 ez275 595.5 1.1 2:13:03 python train.py\n",
+                "1234 ez275 595.5 1.1 2:13:03 python train.py\n"
+                "__SLURM_GPU_TOP_CGROUP_JOB_IDS__\n"
+                "1234 101\n",
             )
         raise AssertionError(command)
 
