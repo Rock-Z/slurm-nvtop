@@ -42,7 +42,7 @@ def render_snapshot(
     gpu_histories: Optional[dict[tuple[str, str], Sequence[Optional[int]]]] = None,
     node_util_histories: Optional[dict[str, Sequence[Optional[int]]]] = None,
     node_mem_histories: Optional[dict[str, Sequence[Optional[int]]]] = None,
-    version: str = "0.2.0",
+    version: str = "0.2.1",
 ) -> str:
     del all_gpu_history, gpu_histories
     term_width, _term_height = _terminal_size()
@@ -130,6 +130,7 @@ def _cluster_gpu_box(
     inner = w - 2
     c1, c2 = _gpu_col_widths(inner)
     c3 = inner - c1 - c2 - 2
+    gpu_widths = (c1, c2, c3)
     sample_host = next(
         (node.host for node in snapshot.nodes if node.host.driver_version or node.host.cuda_version),
         HostStats(),
@@ -146,33 +147,32 @@ def _cluster_gpu_box(
 
     yield chars["tl"] + chars["h2"] * inner + chars["tr"]
     yield _box_line(title, inner, chars)
-    labels_emitted = False
+    yield _column_transition_line(chars, (), gpu_widths)
+    yield _row(
+        ("GPU  Name        Persistence-M", "MIG M.   Uncorr. ECC", ""),
+        gpu_widths,
+        chars,
+    )
+    yield _row(
+        ("Fan  Temp  Perf  Pwr:Usage/Cap", "        Memory-Usage", ""),
+        gpu_widths,
+        chars,
+    )
+    yield _column_transition_line(chars, gpu_widths, ())
     current_columns: tuple[int, ...] | None = None
-    gpu_widths = (c1, c2, c3)
+    node_started = False
     for node in snapshot.nodes:
-        if current_columns is None:
+        if current_columns is None and node_started:
             yield chars["ml_bold"] + chars["h2"] * inner + chars["mr_bold"]
-        else:
+        elif current_columns is not None:
             yield _column_transition_line(chars, current_columns, ())
             current_columns = None
+        node_started = True
         yield _box_line(_node_status(node, color=color), inner, chars)
         if node.error:
             yield _box_line(_style(f"! {node.error}", "bright_red", color), inner, chars)
             continue
         yield _joint_line(chars, gpu_widths, "top")
-        if not labels_emitted:
-            yield _row(
-                ("GPU  Name        Persistence-M", "MIG M.   Uncorr. ECC", ""),
-                gpu_widths,
-                chars,
-            )
-            yield _row(
-                ("Fan  Temp  Perf  Pwr:Usage/Cap", "        Memory-Usage", ""),
-                gpu_widths,
-                chars,
-            )
-            yield _joint_line(chars, gpu_widths, "mid")
-            labels_emitted = True
         if not node.gpus:
             yield _box_line(_style("No GPUs reported by nvidia-smi.", "yellow", color), inner, chars)
             continue
@@ -298,6 +298,7 @@ def _node_history_layout(
     if omitted:
         node_labels[-1] = f"{node_labels[-1]} (+{omitted})"
     cell_widths = _split_widths(inner, len(nodes))
+    side_height = max(_node_history_side_height(width) for width in cell_widths)
 
     return cell_widths, [
         _node_history_cell(
@@ -308,6 +309,7 @@ def _node_history_layout(
             label=idx == 0,
             color=color,
             unicode=unicode,
+            side_height=side_height,
         )
         for idx, node in enumerate(nodes)
     ]
@@ -336,8 +338,9 @@ def _node_history_cell(
     label: bool,
     color: bool,
     unicode: bool,
+    side_height: Optional[int] = None,
 ) -> list[str]:
-    side_height = 3 if width < 34 else 4
+    side_height = _node_history_side_height(width) if side_height is None else side_height
     label_text = "MEM ↑ / UTL ↓" if unicode else "MEM up / UTL down"
     mem_graph = _history_graph_lines(mem_history, width=width, height=side_height, direction="up", unicode=unicode)
     util_graph = _history_graph_lines(
@@ -355,6 +358,10 @@ def _node_history_cell(
         _style(_timeline_axis(width, unicode=unicode), "bright_black", color),
         *_style_lines(util_graph, "cyan", color),
     ]
+
+
+def _node_history_side_height(width: int) -> int:
+    return 3 if width < 34 else 4
 
 
 def _history_graph_lines(

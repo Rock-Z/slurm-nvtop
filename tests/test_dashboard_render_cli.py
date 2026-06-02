@@ -16,6 +16,7 @@ from slurm_gpu_top.models import (
 from slurm_gpu_top.render import (
     _format_process_table_row,
     _node_history_cell,
+    _node_history_layout,
     _process_table_layout,
     _timeline_axis,
     render_snapshot,
@@ -124,7 +125,7 @@ def test_render_snapshot_rich_mode_has_color_graphs_averages_and_process_table()
 
     assert "\x1b[" in rendered
     assert "ALL GPUs" in rendered
-    assert "SGTOP 0.2.0" in rendered
+    assert "SGTOP 0.2.1" in rendered
     assert "Driver Version" in rendered
     assert "Memory-Usage" in rendered
     assert "GPU-Util" not in rendered
@@ -154,9 +155,10 @@ def test_gpu_header_data_separator_is_single_line():
     lines = rendered.splitlines()
     header_line = next(idx for idx, line in enumerate(lines) if "Fan  Temp  Perf" in line)
 
-    assert lines[header_line + 1].startswith("├")
-    assert "─" in lines[header_line + 1]
-    assert "═" not in lines[header_line + 1]
+    assert lines[header_line + 1].startswith("╞")
+    assert "═" in lines[header_line + 1]
+    assert "─" not in lines[header_line + 1]
+    assert "╧" in lines[header_line + 1]
 
 
 def test_node_history_mem_and_util_halves_match_height():
@@ -172,6 +174,47 @@ def test_node_history_mem_and_util_halves_match_height():
     axis_idx = next(idx for idx, line in enumerate(cell) if "now" in line)
 
     assert axis_idx == len(cell) - axis_idx - 1
+
+
+def test_node_history_layout_aligns_axes_when_cell_widths_differ():
+    nodes = []
+    for idx in range(4):
+        node = f"gpu{idx:03d}"
+        nodes.append(
+            NodeSnapshot(
+                node=node,
+                gpus=(
+                    GPUDevice(
+                        node=node,
+                        index=0,
+                        uuid=f"GPU-{idx}",
+                        name="GPU",
+                        gpu_util_percent=idx,
+                        mem_util_percent=idx,
+                        mem_used_mib=idx,
+                        mem_total_mib=100,
+                        temperature_c=None,
+                        power_draw_w=None,
+                        power_limit_w=None,
+                    ),
+                ),
+            ),
+        )
+    snapshot = ClusterSnapshot(nodes=tuple(nodes))
+    histories = {node.node: (0, 25, 50, 75) for node in nodes}
+
+    widths, cells = _node_history_layout(
+        snapshot,
+        width=137,
+        color=False,
+        unicode=True,
+        node_util_histories=histories,
+        node_mem_histories=histories,
+    )
+    axis_indices = [next(idx for idx, line in enumerate(cell) if "now" in line) for cell in cells]
+
+    assert widths == [34, 34, 33, 33]
+    assert len(set(axis_indices)) == 1
 
 
 def test_timeline_axis_extends_past_120s_when_wide_enough():
@@ -196,7 +239,7 @@ def test_render_snapshot_ascii_fallback_keeps_graph_visible():
     )
 
     assert "\x1b[" not in rendered
-    assert "SGTOP 0.2.0" in rendered
+    assert "SGTOP 0.2.1" in rendered
     assert "MEM:" in rendered
     assert "UTL:" in rendered
     assert "#" in rendered
@@ -216,7 +259,7 @@ def test_render_snapshot_compact_width_keeps_history_graph_visible():
         gpu_histories={("gpu001", "GPU-a"): (0, 25, 50, 75)},
     )
 
-    assert "SGTOP 0.2.0" in rendered
+    assert "SGTOP 0.2.1" in rendered
     assert "MEM:" in rendered
     assert "UTL:" in rendered
     assert "A100" in rendered
@@ -255,11 +298,11 @@ def test_render_snapshot_uses_one_gpu_table_grouped_by_node():
 
     rendered = render_snapshot(snapshot, width=120, color=False, unicode=True)
 
-    assert rendered.count("SGTOP 0.2.0") == 1
-    assert rendered.count("SGTOP 0.2.0") == 1
+    assert rendered.count("SGTOP 0.2.1") == 1
+    assert rendered.count("SGTOP 0.2.1") == 1
     assert "[gpu001]" in rendered
     assert "[gpu002]" in rendered
-    assert rendered.index("[gpu001]") < rendered.index("GPU  Name")
+    assert rendered.index("GPU  Name") < rendered.index("[gpu001]")
     assert rendered.index("[gpu002]") > rendered.index("UTL:")
 
 
