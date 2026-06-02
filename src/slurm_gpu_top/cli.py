@@ -9,7 +9,7 @@ import sys
 import termios
 import time
 import tty
-from typing import Sequence
+from typing import Optional, Sequence
 
 from .dashboard import build_snapshot
 from .history import UtilizationHistory
@@ -28,6 +28,8 @@ from .render import render_snapshot
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
+    if argv is None and not args.once and not args.mock_json:
+        _set_short_process_title("sgtop")
     color = _color_enabled(args.color)
     if args.mock_json:
         snapshot = _load_mock_snapshot(args.mock_json)
@@ -142,6 +144,19 @@ def _color_enabled(policy: str) -> Optional[bool]:
     if policy == "never":
         return False
     return None
+
+
+def _set_short_process_title(title: str) -> None:
+    if sys.platform != "linux":
+        return
+    try:
+        import ctypes
+
+        libc = ctypes.CDLL(None)
+        pr_set_name = 15
+        libc.prctl(pr_set_name, title.encode("utf-8")[:15], 0, 0, 0)
+    except Exception:
+        return
 
 
 def _load_mock_snapshot(path: str) -> ClusterSnapshot:

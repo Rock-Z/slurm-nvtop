@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "slurm-gpu-top"
-version = "0.1.0"
+version = "0.2.0"
 description = "nvitop-like dashboard for GPU allocations spread across Slurm nodes"
 readme = "README.md"
 requires-python = ">=3.9"

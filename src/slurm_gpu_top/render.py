@@ -42,7 +42,7 @@ def render_snapshot(
     gpu_histories: Optional[dict[tuple[str, str], Sequence[Optional[int]]]] = None,
     node_util_histories: Optional[dict[str, Sequence[Optional[int]]]] = None,
     node_mem_histories: Optional[dict[str, Sequence[Optional[int]]]] = None,
-    version: str = "0.1.0",
+    version: str = "0.2.0",
 ) -> str:
     del all_gpu_history, gpu_histories
     term_width, _term_height = _terminal_size()
@@ -171,7 +171,7 @@ def _cluster_gpu_box(
                 gpu_widths,
                 chars,
             )
-            yield _joint_line(chars, gpu_widths, "mid_bold")
+            yield _joint_line(chars, gpu_widths, "mid")
             labels_emitted = True
         if not node.gpus:
             yield _box_line(_style("No GPUs reported by nvidia-smi.", "yellow", color), inner, chars)
@@ -340,7 +340,13 @@ def _node_history_cell(
     side_height = 3 if width < 34 else 4
     label_text = "MEM ↑ / UTL ↓" if unicode else "MEM up / UTL down"
     mem_graph = _history_graph_lines(mem_history, width=width, height=side_height, direction="up", unicode=unicode)
-    util_graph = _history_graph_lines(util_history, width=width, height=side_height, direction="down", unicode=unicode)
+    util_graph = _history_graph_lines(
+        util_history,
+        width=width,
+        height=side_height + 1,
+        direction="down",
+        unicode=unicode,
+    )
     if label and mem_graph:
         mem_graph[0] = _overlay_left(mem_graph[0], label_text, width)
     return [
@@ -443,14 +449,14 @@ def _braille_mask(count: int, *, side: str, direction: str) -> int:
 def _timeline_axis(width: int, *, unicode: bool) -> str:
     axis = "─" if unicode else "-"
     line = [axis] * width
-    labels = [
-        (3, "now"),
-        (19, "╴30s├" if unicode else "-30s|"),
-        (34, "╴60s├" if unicode else "-60s|"),
-        (65, "╴120s├" if unicode else "-120s|"),
-    ]
+    labels = [(3, "now")]
+    for seconds in (30, 60, *range(120, 60 * width + 1, 60)):
+        label = f"╴{seconds}s├" if unicode else f"-{seconds}s|"
+        labels.append((seconds // 2 + len(label) - 1, label))
     occupied_until = width + 1
     for offset, label in labels:
+        if offset > width:
+            continue
         start = max(0, width - offset)
         if start + len(label) > width or start + len(label) > occupied_until:
             continue
@@ -658,7 +664,7 @@ def _gpu_box(
     yield _joint_line(chars, (c1, c2, c3), "top")
     yield _row(("GPU  Name        Persistence-M", "MIG M.   Uncorr. ECC", ""), (c1, c2, c3), chars)
     yield _row(("Fan  Temp  Perf  Pwr:Usage/Cap", "        Memory-Usage", ""), (c1, c2, c3), chars)
-    yield _joint_line(chars, (c1, c2, c3), "mid_bold")
+    yield _joint_line(chars, (c1, c2, c3), "mid")
 
     if not gpus:
         yield _box_line(_style("No GPUs reported by nvidia-smi.", "yellow", color), inner, chars)

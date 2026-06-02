@@ -13,7 +13,13 @@ from slurm_gpu_top.models import (
     SlurmJob,
     SnapshotBuilderConfig,
 )
-from slurm_gpu_top.render import _format_process_table_row, _process_table_layout, render_snapshot
+from slurm_gpu_top.render import (
+    _format_process_table_row,
+    _node_history_cell,
+    _process_table_layout,
+    _timeline_axis,
+    render_snapshot,
+)
 
 
 def test_build_snapshot_rediscovers_jobs_each_time_for_additions_and_ends():
@@ -118,7 +124,7 @@ def test_render_snapshot_rich_mode_has_color_graphs_averages_and_process_table()
 
     assert "\x1b[" in rendered
     assert "ALL GPUs" in rendered
-    assert "SGTOP 0.1.0" in rendered
+    assert "SGTOP 0.2.0" in rendered
     assert "Driver Version" in rendered
     assert "Memory-Usage" in rendered
     assert "GPU-Util" not in rendered
@@ -143,6 +149,41 @@ def test_render_snapshot_aligns_mem_and_util_suffixes():
     assert mem_line.index("40000MiB") == util_line.index("83% @ 1980MHz")
 
 
+def test_gpu_header_data_separator_is_single_line():
+    rendered = render_snapshot(_single_gpu_snapshot(util=83, mem=40), width=120, color=False, unicode=True)
+    lines = rendered.splitlines()
+    header_line = next(idx for idx, line in enumerate(lines) if "Fan  Temp  Perf" in line)
+
+    assert lines[header_line + 1].startswith("├")
+    assert "─" in lines[header_line + 1]
+    assert "═" not in lines[header_line + 1]
+
+
+def test_node_history_mem_and_util_halves_match_height():
+    cell = _node_history_cell(
+        "gpu001",
+        width=40,
+        util_history=(10, 20, 30, 40),
+        mem_history=(40, 30, 20, 10),
+        label=True,
+        color=False,
+        unicode=True,
+    )
+    axis_idx = next(idx for idx, line in enumerate(cell) if "now" in line)
+
+    assert axis_idx == len(cell) - axis_idx - 1
+
+
+def test_timeline_axis_extends_past_120s_when_wide_enough():
+    wide = _timeline_axis(140, unicode=True)
+    narrow = _timeline_axis(80, unicode=True)
+
+    assert "╴120s├" in wide
+    assert "╴180s├" in wide
+    assert "╴240s├" in wide
+    assert "╴180s├" not in narrow
+
+
 def test_render_snapshot_ascii_fallback_keeps_graph_visible():
     snapshot = _single_gpu_snapshot(util=75, mem=50)
     rendered = render_snapshot(
@@ -155,7 +196,7 @@ def test_render_snapshot_ascii_fallback_keeps_graph_visible():
     )
 
     assert "\x1b[" not in rendered
-    assert "SGTOP 0.1.0" in rendered
+    assert "SGTOP 0.2.0" in rendered
     assert "MEM:" in rendered
     assert "UTL:" in rendered
     assert "#" in rendered
@@ -175,7 +216,7 @@ def test_render_snapshot_compact_width_keeps_history_graph_visible():
         gpu_histories={("gpu001", "GPU-a"): (0, 25, 50, 75)},
     )
 
-    assert "SGTOP 0.1.0" in rendered
+    assert "SGTOP 0.2.0" in rendered
     assert "MEM:" in rendered
     assert "UTL:" in rendered
     assert "A100" in rendered
@@ -214,8 +255,8 @@ def test_render_snapshot_uses_one_gpu_table_grouped_by_node():
 
     rendered = render_snapshot(snapshot, width=120, color=False, unicode=True)
 
-    assert rendered.count("SGTOP 0.1.0") == 1
-    assert rendered.count("SGTOP 0.1.0") == 1
+    assert rendered.count("SGTOP 0.2.0") == 1
+    assert rendered.count("SGTOP 0.2.0") == 1
     assert "[gpu001]" in rendered
     assert "[gpu002]" in rendered
     assert rendered.index("[gpu001]") < rendered.index("GPU  Name")
