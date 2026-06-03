@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+from dataclasses import replace
 from io import StringIO
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -12,11 +13,17 @@ GPU_MARKER = "__SLURM_GPU_TOP_GPUS__"
 PROCESS_MARKER = "__SLURM_GPU_TOP_PROCESSES__"
 PMON_MARKER = "__SLURM_GPU_TOP_PMON__"
 PS_MARKER = "__SLURM_GPU_TOP_PS__"
-CGROUP_JOB_ID_MARKER = "__SLURM_GPU_TOP_CGROUP_JOB_IDS__"
 
-REMOTE_NVIDIA_SMI_QUERY = (
+# Probe script executed inside a single job's cgroup via `srun --overlap`. Because
+# the step runs in the job's cgroup, nvidia-smi only reports that job's allocated
+# GPUs/processes -- this is how we attribute GPU rows to jobs and, crucially, how
+# we observe every job even when several of a user's jobs share one node (an SSH
+# session can only ever land in one job's cgroup). `SLURM_STEP_GPUS` carries the
+# physical device indices, since nvidia-smi renumbers them from 0 inside a cgroup.
+NODE_PROBE_SCRIPT = (
     f"printf '{META_MARKER}\\n'; "
     "printf 'hostname='; (hostname -f 2>/dev/null || hostname) | head -n1; "
+    "printf 'step_gpus=%s\\n' \"$SLURM_STEP_GPUS\"; "
     "printf 'driver_version='; "
     "nvidia-smi --query-gpu=driver_version --format=csv,noheader,nounits 2>/dev/null | head -n1; "
     "printf 'cuda_version='; "
@@ -45,39 +52,34 @@ REMOTE_NVIDIA_SMI_QUERY = (
     f"printf '\\n{PS_MARKER}\\n'; "
     "pids=$(nvidia-smi --query-compute-apps=pid --format=csv,noheader,nounits 2>/dev/null | "
     "awk 'NF{printf \"%s,\", $1}' | sed 's/,$//'); "
-    "if [ -n \"$pids\" ]; then ps -o pid=,user=,pcpu=,pmem=,etime=,args= -p \"$pids\" 2>/dev/null; fi; "
-    f"printf '\\n{CGROUP_JOB_ID_MARKER}\\n'; "
-    "if [ -n \"$pids\" ]; then for pid in $(printf '%s' \"$pids\" | tr ',' ' '); do "
-    "job_id=$(sed -n 's|.*/job_\\([0-9][0-9_]*\\).*|\\1|p' \"/proc/$pid/cgroup\" 2>/dev/null | head -n1); "
-    "printf '%s %s\\n' \"$pid\" \"$job_id\"; "
-    "done; fi"
+    "if [ -n \"$pids\" ]; then ps -o pid=,user=,pcpu=,pmem=,etime=,args= -p \"$pids\" 2>/dev/null; fi"
 )
 
 
-def poll_node_gpus(
+def poll_job(
+    job_id: str,
     node: str,
     *,
-    ssh_options: Sequence[str] = ("BatchMode=yes", "ConnectTimeout=5"),
-    runner: CommandRunner = run_command,
-    timeout: float = 8.0,
-) -> Tuple[Tuple[GPUDevice, ...], Optional[str]]:
-    gpus, _host, error = poll_node(node, ssh_options=ssh_options, runner=runner, timeout=timeout)
-    return gpus, error
-
-
-def poll_node(
-    node: str,
-    *,
-    ssh_options: Sequence[str] = ("BatchMode=yes", "ConnectTimeout=5"),
     runner: CommandRunner = run_command,
     timeout: float = 8.0,
 ) -> Tuple[Tuple[GPUDevice, ...], HostStats, Optional[str]]:
-    ssh_args = ["ssh"]
-    for option in ssh_options:
-        ssh_args.extend(["-o", option])
-    ssh_args.extend([node, REMOTE_NVIDIA_SMI_QUERY])
+    """Probe one node of one job by running the probe script inside that job's cgroup.
 
-    result = runner(ssh_args, timeout)
+    `srun --overlap` attaches a throwaway step to the running job, so the probe sees
+    exactly the GPUs and processes allocated to ``job_id`` on ``node`` -- no SSH, and
+    no confusion when several of the user's jobs share a node.
+    """
+    srun_args = [
+        "srun",
+        "--jobid", str(job_id),
+        "--overlap",
+        "--nodelist", node,
+        "--nodes", "1",
+        "--ntasks", "1",
+        "bash", "-c", NODE_PROBE_SCRIPT,
+    ]
+
+    result = runner(srun_args, timeout)
     if not result.ok:
         error = result.stderr.strip() or result.stdout.strip() or "GPU query failed"
         if result.timed_out:
@@ -85,23 +87,25 @@ def poll_node(
         return (), HostStats(hostname=node), error
 
     try:
-        return (*parse_node_probe_output(node, result.stdout), None)
+        return (*parse_node_probe_output(node, result.stdout, slurm_job_id=str(job_id)), None)
     except ValueError as exc:
         return (), HostStats(hostname=node), str(exc)
 
 
-def parse_nvidia_smi_output(node: str, output: str) -> Tuple[GPUDevice, ...]:
-    return parse_node_probe_output(node, output)[0]
-
-
-def parse_node_probe_output(node: str, output: str) -> Tuple[Tuple[GPUDevice, ...], HostStats]:
+def parse_node_probe_output(
+    node: str,
+    output: str,
+    *,
+    slurm_job_id: str = "",
+) -> Tuple[Tuple[GPUDevice, ...], HostStats]:
     sections = _split_sections(output)
-    host = parse_host_stats(node, sections.get(META_MARKER, ""))
+    meta_text = sections.get(META_MARKER, "")
+    host = parse_host_stats(node, meta_text)
+    step_gpus = _parse_step_gpus(meta_text)
     gpu_text = sections.get(GPU_MARKER)
     process_text = sections.get(PROCESS_MARKER, "")
     pmon_text = sections.get(PMON_MARKER, "")
     ps_text = sections.get(PS_MARKER, "")
-    job_id_text = sections.get(CGROUP_JOB_ID_MARKER, "")
 
     if gpu_text is None:
         # Backward-compatible parser for old fixture strings.
@@ -112,7 +116,6 @@ def parse_node_probe_output(node: str, output: str) -> Tuple[Tuple[GPUDevice, ..
 
     pmon_by_pid_gpu = parse_pmon_output(pmon_text)
     ps_by_pid = parse_ps_output(ps_text)
-    job_id_by_pid = parse_process_job_ids(job_id_text)
 
     processes_by_uuid: Dict[str, List[GPUProcess]] = {}
     for row in _csv_rows(process_text):
@@ -129,7 +132,7 @@ def parse_node_probe_output(node: str, output: str) -> Tuple[Tuple[GPUDevice, ..
             name=row[1].strip(),
             used_memory_mib=_parse_int(row[2]),
             gpu_uuid=uuid,
-            slurm_job_id=job_id_by_pid.get(pid, ""),
+            slurm_job_id=slurm_job_id,
             type=pmon_info.get("type") or "C",
             user=ps_info.get("user", ""),
             cpu_percent=_parse_float(ps_info.get("cpu")),
@@ -144,13 +147,33 @@ def parse_node_probe_output(node: str, output: str) -> Tuple[Tuple[GPUDevice, ..
     gpus: List[GPUDevice] = []
     for row in _csv_rows(gpu_text):
         if len(row) >= 19:
-            gpus.append(_parse_rich_gpu_row(node, row, processes_by_uuid))
-            continue
-        if len(row) >= 10:
-            gpus.append(_parse_legacy_gpu_row(node, row, processes_by_uuid))
-            continue
-        raise ValueError(f"unexpected nvidia-smi GPU row with {len(row)} fields: {row!r}")
+            gpu = _parse_rich_gpu_row(node, row, processes_by_uuid)
+        elif len(row) >= 10:
+            gpu = _parse_legacy_gpu_row(node, row, processes_by_uuid)
+        else:
+            raise ValueError(f"unexpected nvidia-smi GPU row with {len(row)} fields: {row!r}")
+        gpus.append(replace(gpu, index=_physical_index(gpu.index, step_gpus), slurm_job_id=slurm_job_id))
     return tuple(gpus), host
+
+
+def _parse_step_gpus(meta_text: str) -> List[int]:
+    for line in meta_text.splitlines():
+        if line.startswith("step_gpus="):
+            _key, _sep, value = line.partition("=")
+            return [parsed for token in value.replace(",", " ").split() if (parsed := _parse_int(token)) is not None]
+    return []
+
+
+def _physical_index(relative: int, step_gpus: Sequence[int]) -> int:
+    """Map a cgroup-relative nvidia-smi index to its physical device index.
+
+    Inside a job cgroup nvidia-smi renumbers visible GPUs from 0; ``SLURM_STEP_GPUS``
+    lists the real device indices in the same order, so two jobs sharing a node keep
+    distinct GPU numbers instead of both showing as GPU 0.
+    """
+    if 0 <= relative < len(step_gpus):
+        return step_gpus[relative]
+    return relative
 
 
 def parse_host_stats(node: str, text: str) -> HostStats:
@@ -219,21 +242,6 @@ def parse_ps_output(text: str) -> Dict[int, Dict[str, str]]:
     return rows
 
 
-def parse_process_job_ids(text: str) -> Dict[int, str]:
-    rows: Dict[int, str] = {}
-    for line in text.splitlines():
-        parts = line.strip().split(None, 1)
-        if len(parts) < 2:
-            continue
-        pid = _parse_int(parts[0])
-        if pid is None:
-            continue
-        job_id = parts[1].strip()
-        if job_id:
-            rows[pid] = job_id
-    return rows
-
-
 def _parse_rich_gpu_row(
     node: str,
     row: List[str],
@@ -294,7 +302,7 @@ def _parse_legacy_gpu_row(
 
 
 def _split_sections(output: str) -> Dict[str, str]:
-    markers = {META_MARKER, GPU_MARKER, PROCESS_MARKER, PMON_MARKER, PS_MARKER, CGROUP_JOB_ID_MARKER}
+    markers = {META_MARKER, GPU_MARKER, PROCESS_MARKER, PMON_MARKER, PS_MARKER}
     sections: Dict[str, List[str]] = {}
     current: Optional[str] = None
     for line in output.splitlines():
@@ -306,54 +314,6 @@ def _split_sections(output: str) -> Dict[str, str]:
         if current is not None:
             sections[current].append(line)
     return {key: "\n".join(value) for key, value in sections.items()}
-
-
-def _old_parse_nvidia_smi_output(node: str, output: str) -> Tuple[GPUDevice, ...]:
-    if PROCESS_MARKER in output:
-        gpu_text, process_text = output.split(PROCESS_MARKER, 1)
-    else:
-        gpu_text, process_text = output, ""
-
-    processes_by_uuid: Dict[str, List[GPUProcess]] = {}
-    for row in _csv_rows(process_text):
-        if len(row) < 4:
-            continue
-        pid = _parse_int(row[0])
-        if pid is None:
-            continue
-        proc = GPUProcess(
-            pid=pid,
-            name=row[1].strip(),
-            used_memory_mib=_parse_int(row[2]),
-            gpu_uuid=row[3].strip(),
-        )
-        processes_by_uuid.setdefault(proc.gpu_uuid, []).append(proc)
-
-    gpus: List[GPUDevice] = []
-    for row in _csv_rows(gpu_text):
-        if len(row) < 10:
-            raise ValueError(f"unexpected nvidia-smi GPU row with {len(row)} fields: {row!r}")
-        index = _parse_int(row[0])
-        if index is None:
-            raise ValueError(f"GPU index is not an integer: {row[0]!r}")
-        uuid = row[1].strip()
-        gpus.append(
-            GPUDevice(
-                node=node,
-                index=index,
-                uuid=uuid,
-                name=row[2].strip(),
-                gpu_util_percent=_parse_int(row[3]),
-                mem_util_percent=_parse_int(row[4]),
-                mem_used_mib=_parse_int(row[5]),
-                mem_total_mib=_parse_int(row[6]),
-                temperature_c=_parse_int(row[7]),
-                power_draw_w=_parse_float(row[8]),
-                power_limit_w=_parse_float(row[9]),
-                processes=tuple(processes_by_uuid.get(uuid, ())),
-            )
-        )
-    return tuple(gpus)
 
 
 def _csv_rows(text: str) -> List[List[str]]:

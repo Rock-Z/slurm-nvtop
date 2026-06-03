@@ -527,18 +527,6 @@ def _cluster_process_box(
     yield chars["bl"] + chars["h2"] * inner + chars["br"]
 
 
-def _format_cluster_process_row(node: NodeSnapshot, gpu: GPUDevice, proc: GPUProcess, width: int) -> str:
-    command = proc.command or proc.name
-    fixed = (
-        f"{node.node:<12} {gpu.index:>3}  {proc.pid:>6} {_short(proc.type, 3):<3} "
-        f"{_short(proc.user, 5):<5} {_value(proc.used_memory_mib, 'MiB'):>8} "
-        f"{_na_int(proc.sm_util_percent):>3} {_na_int(proc.mem_bw_util_percent):>5} "
-        f"{_na_float(proc.cpu_percent):>5} {_na_float(proc.mem_percent):>5} "
-        f"{(proc.elapsed or 'N/A'):>8}  "
-    )
-    return fixed + _clip_visible(command, max(0, width - _visible_len(fixed)))
-
-
 def _cluster_process_row_data(node: NodeSnapshot, gpu: GPUDevice, proc: GPUProcess) -> dict[str, str]:
     return {
         "node": node.node,
@@ -619,157 +607,6 @@ def _format_process_table_row(
     return fixed + "  " + _clip_visible(row.get("command", ""), command_width)
 
 
-def _render_node(node: NodeSnapshot, *, width: int, color: bool, unicode: bool) -> Iterable[str]:
-    host = node.host
-    title_host = host.hostname or node.node
-    yield _clip(
-        _style(f"[{node.node}]", "bright_cyan", color)
-        + " "
-        + _style(_format_jobs(node.jobs), "yellow", color),
-        width,
-    )
-
-    if node.error:
-        yield from _simple_box([_style(f"! {node.error}", "bright_red", color)], width, unicode=unicode)
-        return
-
-    yield from _gpu_box(node.gpus, host, width=width, color=color, unicode=unicode)
-    yield from _host_lines(host, width=width, color=color, unicode=unicode)
-    yield ""
-    yield from _process_box(node, title_host, width=width, color=color, unicode=unicode)
-
-
-def _gpu_box(
-    gpus: Sequence[GPUDevice],
-    host: HostStats,
-    *,
-    width: int,
-    color: bool,
-    unicode: bool,
-) -> Iterable[str]:
-    chars = _box_chars(unicode)
-    w = min(width, 120)
-    inner = w - 2
-    if inner >= 98:
-        c1, c2 = 31, 22
-    else:
-        c1, c2 = 24, 16
-    c3 = max(12, inner - c1 - c2 - 2)
-    sep = chars["v"]
-
-    title = (
-        _style("NVITOP", "bold", color)
-        + " "
-        + _style("1.6.2-like", "green", color)
-        + f"      Driver Version: {host.driver_version or 'N/A'}"
-        + f"      CUDA Driver Version: {host.cuda_version or 'N/A'}"
-    )
-
-    yield chars["tl"] + chars["h2"] * inner + chars["tr"]
-    yield _box_line(_clip_visible(title, inner), inner, chars)
-    yield _joint_line(chars, (c1, c2, c3), "top")
-    yield _row(("GPU  Name        Persistence-M", "MIG M.   Uncorr. ECC", ""), (c1, c2, c3), chars)
-    yield _row((_gpu_detail_header(c1), "        Memory-Usage", ""), (c1, c2, c3), chars)
-    yield _joint_line(chars, (c1, c2, c3), "mid")
-
-    if not gpus:
-        yield _box_line(_style("No GPUs reported by nvidia-smi.", "yellow", color), inner, chars)
-    for idx, gpu in enumerate(sorted(gpus, key=lambda item: item.index)):
-        if idx:
-            yield _joint_line(chars, (c1, c2, c3), "mid")
-        mem_percent = _memory_percent(gpu)
-        util = gpu.gpu_util_percent
-        yield _row(
-            (
-                _gpu_identity_row(gpu, c1),
-                f"{_short(gpu.mig_mode, 8):<8} {_na_int(gpu.ecc_errors):>11}",
-                _bar_stat(
-                    "MEM",
-                    mem_percent,
-                    _mem_usage_short(gpu),
-                    color=color,
-                    unicode=unicode,
-                    width=_stat_bar_width(c3),
-                    suffix_width=_stat_suffix_width(c3),
-                ),
-            ),
-            (c1, c2, c3),
-            chars,
-        )
-        yield _row(
-            (
-                _gpu_detail_row(gpu, c1),
-                f"{_mem_usage(gpu):>21}",
-                _bar_stat(
-                    "UTL",
-                    util,
-                    f"{_percent(util):>4} @ {_clock(gpu)}",
-                    color=color,
-                    unicode=unicode,
-                    width=_stat_bar_width(c3),
-                    suffix_width=_stat_suffix_width(c3),
-                ),
-            ),
-            (c1, c2, c3),
-            chars,
-        )
-    yield _joint_line(chars, (c1, c2, c3), "bottom")
-
-
-def _host_lines(host: HostStats, *, width: int, color: bool, unicode: bool) -> Iterable[str]:
-    cpu = _host_bar("CPU", host.cpu_percent, 24, color=color, unicode=unicode)
-    uptime = _uptime(host.uptime_seconds)
-    loads = " ".join(f"{value:.2f}" for value in host.load_average) or "N/A"
-    yield _clip(f"[ {cpu:<44} UPTIME: {uptime:>10} ]  ( Load Average: {loads} )", width)
-
-    mem = _host_bar("MEM", host.memory_percent, 10, color=color, unicode=unicode)
-    mem_used = _human_mib(host.memory_used_mib)
-    swp = _host_bar("SWP", host.swap_percent, 10, color=color, unicode=unicode)
-    yield _clip(f"[ {mem:<50} USED: {mem_used:>9} ]  [ {swp:<28} ]", width)
-
-
-def _process_box(
-    node: NodeSnapshot,
-    title_host: str,
-    *,
-    width: int,
-    color: bool,
-    unicode: bool,
-) -> Iterable[str]:
-    chars = _box_chars(unicode)
-    w = min(width, 120)
-    inner = w - 2
-    rows = [(gpu, proc) for gpu in sorted(node.gpus, key=lambda item: item.index) for proc in gpu.processes]
-
-    yield chars["tl"] + chars["h2"] * inner + chars["tr"]
-    yield _box_line(
-        _fit_right("Processes:", f"{_user_hint(rows)}@{title_host}", inner),
-        inner,
-        chars,
-    )
-    yield _box_line("GPU     PID      USER  GPU-MEM %SM %GMBW  %CPU  %MEM     TIME  COMMAND", inner, chars)
-    yield chars["ml_bold"] + chars["h2"] * inner + chars["mr_bold"]
-    if not rows:
-        yield _box_line(_style("No running GPU compute processes found.", "bright_black", color), inner, chars)
-    for idx, (gpu, proc) in enumerate(rows):
-        if idx:
-            yield chars["ml"] + chars["h1"] * inner + chars["mr"]
-        yield _box_line(_format_process_row(gpu, proc, inner), inner, chars)
-    yield chars["bl"] + chars["h2"] * inner + chars["br"]
-
-
-def _format_process_row(gpu: GPUDevice, proc: GPUProcess, width: int) -> str:
-    command = proc.command or proc.name
-    fixed = (
-        f"{gpu.index:>3}  {proc.pid:>6} {_short(proc.type, 3):<3} "
-        f"{_short(proc.user, 5):<5} {_value(proc.used_memory_mib, 'MiB'):>8} "
-        f"{_na_int(proc.sm_util_percent):>3} {_na_int(proc.mem_bw_util_percent):>5} "
-        f"{_na_float(proc.cpu_percent):>5} {_na_float(proc.mem_percent):>5} "
-        f"{(proc.elapsed or 'N/A'):>8}  "
-    )
-    return fixed + _clip_visible(command, max(0, width - _visible_len(fixed)))
-
-
 def _format_jobs(jobs: Iterable[SlurmJob], *, empty: str = "unknown") -> str:
     parts = [f"{job.job_id} {job.user}/{job.name} {job.elapsed}" for job in jobs]
     return ", ".join(parts) if parts else empty
@@ -777,6 +614,8 @@ def _format_jobs(jobs: Iterable[SlurmJob], *, empty: str = "unknown") -> str:
 
 def _jobs_for_gpu(node: NodeSnapshot, gpu: GPUDevice) -> tuple[SlurmJob, ...]:
     job_ids = {proc.slurm_job_id for proc in gpu.processes if proc.slurm_job_id}
+    if gpu.slurm_job_id:
+        job_ids.add(gpu.slurm_job_id)
     return tuple(job for job in node.jobs if job.job_id in job_ids)
 
 
@@ -801,10 +640,6 @@ def _stat_bar_width(column_width: int) -> int:
 
 def _stat_suffix_width(column_width: int) -> int:
     return max(12, min(18, column_width - _stat_bar_width(column_width) - 7))
-
-
-def _host_bar(label: str, percent: Optional[float], width: int, *, color: bool, unicode: bool) -> str:
-    return f"{label}: {_fraction_bar(percent, width=width, color=color, unicode=unicode)} {_percent(percent):>5}"
 
 
 def _fraction_bar(percent: Optional[float], *, width: int, color: bool, unicode: bool) -> str:
@@ -882,15 +717,6 @@ def _column_joint_positions(widths: Sequence[int]) -> set[int]:
         offset += width + 1
         positions.add(offset)
     return positions
-
-
-def _simple_box(lines: Sequence[str], width: int, *, unicode: bool) -> Iterable[str]:
-    chars = _box_chars(unicode)
-    inner = min(width, 120) - 2
-    yield chars["tl"] + chars["h2"] * inner + chars["tr"]
-    for line in lines:
-        yield _box_line(_clip_visible(line, inner), inner, chars)
-    yield chars["bl"] + chars["h2"] * inner + chars["br"]
 
 
 def _box_chars(unicode: bool) -> dict[str, str]:
@@ -1054,13 +880,6 @@ def _short(value: object, width: int) -> str:
 def _fit_right(left: str, right: str, width: int) -> str:
     gap = max(1, width - _visible_len(left) - _visible_len(right))
     return left + " " * gap + right
-
-
-def _user_hint(rows: Sequence[tuple[GPUDevice, GPUProcess]]) -> str:
-    for _gpu, proc in rows:
-        if proc.user:
-            return proc.user
-    return os.environ.get("USER", "user")
 
 
 def _all_gpus(snapshot: ClusterSnapshot) -> list[GPUDevice]:

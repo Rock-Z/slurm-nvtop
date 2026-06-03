@@ -52,7 +52,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     config = SnapshotBuilderConfig(
         user=args.user,
         all_users=args.all_users,
-        ssh_options=tuple(args.ssh_option),
         command_timeout_s=args.timeout,
         max_workers=args.max_workers,
     )
@@ -117,14 +116,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--interval", type=float, default=2.0, help="refresh interval in seconds")
     parser.add_argument("--user", default=os.environ.get("USER"), help="Slurm user to monitor")
     parser.add_argument("--all-users", action="store_true", help="show all visible running GPU jobs")
-    parser.add_argument(
-        "--ssh-option",
-        action="append",
-        default=["BatchMode=yes", "ConnectTimeout=5"],
-        help="SSH -o option for node polling; may be passed multiple times",
-    )
     parser.add_argument("--timeout", type=float, default=8.0, help="per-command timeout in seconds")
-    parser.add_argument("--max-workers", type=int, default=16, help="maximum concurrent node polls")
+    parser.add_argument("--max-workers", type=int, default=16, help="maximum concurrent job probes")
     parser.add_argument("--no-clear", action="store_true", help="do not clear the terminal between refreshes")
     parser.add_argument("--no-unicode", action="store_true", help="use ASCII fallbacks instead of Unicode bars")
     parser.add_argument(

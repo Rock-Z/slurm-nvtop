@@ -1,14 +1,12 @@
 from slurm_gpu_top.gpu import (
-    CGROUP_JOB_ID_MARKER,
     PROCESS_MARKER,
     parse_node_probe_output,
-    parse_nvidia_smi_output,
-    poll_node_gpus,
+    poll_job,
 )
 from slurm_gpu_top.models import CommandResult
 
 
-def test_parse_nvidia_smi_output_with_processes():
+def test_parse_node_probe_output_with_processes():
     output = (
         "0, GPU-aaa, NVIDIA A100-SXM4-80GB, 83, 40, 32500, 81920, 62, 241.5, 400.0\n"
         "1, GPU-bbb, NVIDIA A100-SXM4-80GB, 0, 0, 0, 81920, 35, 72.0, 400.0\n"
@@ -16,7 +14,7 @@ def test_parse_nvidia_smi_output_with_processes():
         "9100, python, 32000, GPU-aaa\n"
     )
 
-    gpus = parse_nvidia_smi_output("gpu001", output)
+    gpus, _host = parse_node_probe_output("gpu001", output)
 
     assert len(gpus) == 2
     assert gpus[0].node == "gpu001"
@@ -25,10 +23,10 @@ def test_parse_nvidia_smi_output_with_processes():
     assert gpus[1].processes == ()
 
 
-def test_parse_nvidia_smi_output_accepts_na_values():
+def test_parse_node_probe_output_accepts_na_values():
     output = "0, GPU-aaa, NVIDIA L40S, N/A, [N/A], 0, 46068, N/A, N/A, 350.0\n"
 
-    gpu = parse_nvidia_smi_output("gpu010", output)[0]
+    gpu = parse_node_probe_output("gpu010", output)[0][0]
 
     assert gpu.gpu_util_percent is None
     assert gpu.mem_util_percent is None
@@ -37,10 +35,13 @@ def test_parse_nvidia_smi_output_accepts_na_values():
     assert gpu.power_limit_w == 350.0
 
 
-def test_parse_node_probe_output_with_nvitop_style_stats():
+def test_parse_node_probe_output_stamps_job_and_maps_physical_index():
+    # nvidia-smi renumbers GPUs from 0 inside the job cgroup; SLURM_STEP_GPUS=2
+    # tells us the real device index, and every row/process belongs to the job.
     output = (
         "__SLURM_GPU_TOP_META__\n"
         "hostname=gpu001.example\n"
+        "step_gpus=2\n"
         "driver_version=570.195.03\n"
         "cuda_version=12.8\n"
         "uptime_seconds=1572480\n"
@@ -57,11 +58,9 @@ def test_parse_node_probe_output_with_nvitop_style_stats():
         "0 514876 C 6 2 - - python\n"
         "__SLURM_GPU_TOP_PS__\n"
         "514876 ez275 595.5 1.1 2:13:03 /path/train.py\n"
-        f"{CGROUP_JOB_ID_MARKER}\n"
-        "514876 101\n"
     )
 
-    gpus, host = parse_node_probe_output("gpu001", output)
+    gpus, host = parse_node_probe_output("gpu001", output, slurm_job_id="101")
 
     assert host.hostname == "gpu001.example"
     assert host.driver_version == "570.195.03"
@@ -69,6 +68,8 @@ def test_parse_node_probe_output_with_nvitop_style_stats():
     assert host.cpu_percent == 41.1
     assert host.load_average == (23.42, 21.24, 20.95)
     gpu = gpus[0]
+    assert gpu.index == 2  # mapped from cgroup-relative 0 via SLURM_STEP_GPUS
+    assert gpu.slurm_job_id == "101"
     assert gpu.persistence_mode == "On"
     assert gpu.pci_bus_id == "00000000:55:00.0"
     assert gpu.mig_mode == "Disabled"
@@ -84,16 +85,16 @@ def test_parse_node_probe_output_with_nvitop_style_stats():
     assert proc.slurm_job_id == "101"
 
 
-def test_parse_nvidia_smi_output_rejects_malformed_gpu_rows():
+def test_parse_node_probe_output_rejects_malformed_gpu_rows():
     try:
-        parse_nvidia_smi_output("gpu001", "0, GPU-aaa\n")
+        parse_node_probe_output("gpu001", "0, GPU-aaa\n")
     except ValueError as exc:
         assert "unexpected nvidia-smi GPU row" in str(exc)
     else:
         raise AssertionError("expected ValueError")
 
 
-def test_poll_node_gpus_builds_ssh_command_and_parses_stdout():
+def test_poll_job_builds_srun_overlap_command_and_parses_stdout():
     calls = []
 
     def runner(args, timeout):
@@ -104,19 +105,23 @@ def test_poll_node_gpus_builds_ssh_command_and_parses_stdout():
             "0, GPU-aaa, NVIDIA H100, 50, 25, 10000, 81559, 45, 200, 700\n",
         )
 
-    gpus, error = poll_node_gpus("gpu007", ssh_options=("BatchMode=yes",), runner=runner)
+    gpus, _host, error = poll_job("1984799", "gpu007", runner=runner)
 
     assert error is None
     assert gpus[0].name == "NVIDIA H100"
-    assert calls[0][0:3] == ("ssh", "-o", "BatchMode=yes")
-    assert calls[0][3] == "gpu007"
+    assert gpus[0].slurm_job_id == "1984799"
+    command = calls[0]
+    assert command[0] == "srun"
+    assert "--overlap" in command
+    assert command[command.index("--jobid") + 1] == "1984799"
+    assert command[command.index("--nodelist") + 1] == "gpu007"
 
 
-def test_poll_node_gpus_returns_error_for_timeout():
+def test_poll_job_returns_error_for_timeout():
     def runner(args, timeout):
         return CommandResult(tuple(args), 124, "", "hung", timed_out=True)
 
-    gpus, error = poll_node_gpus("gpu007", runner=runner, timeout=3)
+    gpus, _host, error = poll_job("1984799", "gpu007", runner=runner, timeout=3)
 
     assert gpus == ()
     assert "timed out after 3s" in error

@@ -5,8 +5,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, Iterable, List, Tuple
 
 from .commands import CommandRunner, run_command
-from .gpu import poll_node
-from .models import ClusterSnapshot, HostStats, NodeSnapshot, SlurmJob, SnapshotBuilderConfig
+from .gpu import poll_job
+from .models import ClusterSnapshot, GPUDevice, HostStats, NodeSnapshot, SlurmJob, SnapshotBuilderConfig
 from .slurm import SlurmError, discover_gpu_jobs
 
 
@@ -26,44 +26,86 @@ def build_snapshot(
     except SlurmError as exc:
         return ClusterSnapshot(errors=(str(exc),), generated_at=now, user_filter=config.user)
 
-    jobs_by_node = _jobs_by_node(jobs)
-    if not jobs_by_node:
+    # The probe unit is the job, not the node: each job's GPUs are only visible from
+    # inside that job's cgroup, so a node hosting several of the user's jobs needs one
+    # probe per job to be seen in full.
+    probes = [(job, node) for job in jobs for node in job.nodes]
+    if not probes:
         return ClusterSnapshot(generated_at=now, user_filter=config.user)
 
-    snapshots: Dict[str, NodeSnapshot] = {}
-    workers = max(1, min(config.max_workers, len(jobs_by_node)))
+    builders: Dict[str, _NodeBuilder] = {}
+    for job in jobs:
+        for node in job.nodes:
+            builders.setdefault(node, _NodeBuilder(node)).jobs.append(job)
+
+    workers = max(1, min(config.max_workers, len(probes)))
     with ThreadPoolExecutor(max_workers=workers) as executor:
         futures = {
             executor.submit(
-                poll_node,
+                poll_job,
+                job.job_id,
                 node,
-                ssh_options=config.ssh_options,
                 runner=runner,
                 timeout=config.command_timeout_s,
-            ): node
-            for node in jobs_by_node
+            ): (job, node)
+            for job, node in probes
         }
         for future in as_completed(futures):
-            node = futures[future]
+            job, node = futures[future]
             try:
                 gpus, host, error = future.result()
             except Exception as exc:  # defensive: keep the dashboard alive
                 gpus, host, error = (), HostStats(hostname=node), str(exc)
-            snapshots[node] = NodeSnapshot(
-                node=node,
-                jobs=tuple(sorted(jobs_by_node[node], key=lambda job: job.job_id)),
-                gpus=gpus,
-                host=host,
-                error=error,
-            )
+            builders[node].add(job, gpus, host, error)
 
-    ordered = tuple(snapshots[node] for node in sorted(snapshots))
+    ordered = tuple(builders[node].build() for node in sorted(builders))
     return ClusterSnapshot(nodes=ordered, generated_at=now, user_filter=config.user)
 
 
-def _jobs_by_node(jobs: Iterable[SlurmJob]) -> Dict[str, List[SlurmJob]]:
-    grouped: Dict[str, List[SlurmJob]] = {}
-    for job in jobs:
-        for node in job.nodes:
-            grouped.setdefault(node, []).append(job)
-    return grouped
+class _NodeBuilder:
+    """Accumulates the per-job probe results that land on a single node."""
+
+    def __init__(self, node: str) -> None:
+        self.node = node
+        self.jobs: List[SlurmJob] = []
+        self._gpus: Dict[str, GPUDevice] = {}
+        self._host = HostStats(hostname=node)
+        self._failures: List[Tuple[str, str]] = []
+
+    def add(
+        self,
+        job: SlurmJob,
+        gpus: Iterable[GPUDevice],
+        host: HostStats,
+        error: object,
+    ) -> None:
+        added = False
+        for gpu in gpus:
+            # Each job sees a disjoint set of GPUs; key by uuid so a GPU shared by
+            # two jobs (MPS/sharding) is merged rather than duplicated.
+            self._gpus.setdefault(gpu.uuid, gpu)
+            added = True
+        if host.driver_version or host.cuda_version or host.cpu_percent is not None:
+            self._host = host
+        if error and not added:
+            self._failures.append((job.job_id, str(error)))
+
+    def build(self) -> NodeSnapshot:
+        gpus = tuple(sorted(self._gpus.values(), key=lambda gpu: gpu.index))
+        return NodeSnapshot(
+            node=self.node,
+            jobs=tuple(sorted(self.jobs, key=lambda job: job.job_id)),
+            gpus=gpus,
+            host=self._host,
+            error=self._node_error(bool(gpus)),
+        )
+
+    def _node_error(self, has_gpus: bool) -> object:
+        # Surface a node-level error only when nothing was observed; otherwise the
+        # renderer would hide the GPUs we did manage to probe. With a lone failing
+        # job the bare message reads best; name the jobs only when several failed.
+        if has_gpus or not self._failures:
+            return None
+        if len(self._failures) == 1:
+            return self._failures[0][1]
+        return "; ".join(f"job {job_id}: {message}" for job_id, message in self._failures)

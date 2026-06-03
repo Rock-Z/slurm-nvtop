@@ -40,7 +40,7 @@ def test_build_snapshot_rediscovers_jobs_each_time_for_additions_and_ends():
             return CommandResult(command, 0, f"JobId={job_id} AllocTRES=gres/gpu=1 NodeList={node}")
         if command[:3] == ("scontrol", "show", "hostnames"):
             return CommandResult(command, 0, command[-1] + "\n")
-        if command[:1] == ("ssh",):
+        if command[:1] == ("srun",):
             return CommandResult(
                 command,
                 0,
@@ -66,7 +66,7 @@ def test_build_snapshot_keeps_node_poll_errors_visible():
             return CommandResult(command, 0, "JobId=101 AllocTRES=gres/gpu=1 NodeList=gpu001")
         if command[:3] == ("scontrol", "show", "hostnames"):
             return CommandResult(command, 0, "gpu001\n")
-        if command[:1] == ("ssh",):
+        if command[:1] == ("srun",):
             return CommandResult(command, 255, "", "connection refused")
         raise AssertionError(command)
 
@@ -90,15 +90,13 @@ def test_render_snapshot_groups_by_node_and_lists_processes():
             return CommandResult(command, 0, "JobId=101 JobName=train AllocTRES=gres/gpu=2 NodeList=gpu001")
         if command[:3] == ("scontrol", "show", "hostnames"):
             return CommandResult(command, 0, "gpu001\n")
-        if command[:1] == ("ssh",):
+        if command[:1] == ("srun",):
             return CommandResult(
                 command,
                 0,
                 "0, GPU-a, NVIDIA A100, 75, 50, 40000, 81920, 60, 250, 400\n"
                 "__SLURM_GPU_TOP_PROCESSES__\n"
-                "1234, python train.py, 39000, GPU-a\n"
-                "__SLURM_GPU_TOP_CGROUP_JOB_IDS__\n"
-                "1234 101\n",
+                "1234, python train.py, 39000, GPU-a\n",
             )
         raise AssertionError(command)
 
@@ -111,21 +109,28 @@ def test_render_snapshot_groups_by_node_and_lists_processes():
     assert "1234" in rendered
 
 
-def test_render_snapshot_uses_gpu_process_job_id_for_gpu_status():
-    rendered = render_snapshot(_multi_job_gpu_snapshot(process_job_id="202"), width=120, color=False, unicode=True)
+def test_render_snapshot_attributes_each_shared_node_gpu_to_its_own_job():
+    # Regression: two of a user's jobs on one node, one GPU each. Each GPU row must
+    # name its own job -- the bug was that only one of the two jobs ever appeared.
+    rendered = render_snapshot(_two_jobs_one_node_snapshot(), width=120, color=False, unicode=True)
+    node_lines = [line for line in rendered.splitlines() if "[gpu001]" in line]
+
+    assert len(node_lines) == 2
+    assert "101 ez275/first" in node_lines[0] and "second" not in node_lines[0]
+    assert "202 ez275/second" in node_lines[1] and "first" not in node_lines[1]
+
+
+def test_render_snapshot_does_not_fall_back_to_node_jobs_for_unidentified_gpu():
+    base = _two_jobs_one_node_snapshot()
+    node = base.nodes[0]
+    orphan = replace(node.gpus[0], slurm_job_id="", processes=())
+    snapshot = replace(base, nodes=(replace(node, gpus=(orphan,)),))
+
+    rendered = render_snapshot(snapshot, width=120, color=False, unicode=True)
     node_line = next(line for line in rendered.splitlines() if "[gpu001]" in line)
 
-    assert "202 ez275/second" in node_line
-    assert "101 ez275/first" not in node_line
-
-
-def test_render_snapshot_does_not_fall_back_to_node_jobs_for_unmatched_gpu():
-    rendered = render_snapshot(_multi_job_gpu_snapshot(process_job_id=""), width=120, color=False, unicode=True)
-    node_line = next(line for line in rendered.splitlines() if "[gpu001]" in line)
-
-    assert "ez275/" not in node_line
-    assert "101" not in node_line
-    assert "202" not in node_line
+    assert "first" not in node_line
+    assert "second" not in node_line
 
 
 def test_render_snapshot_rich_mode_has_color_graphs_averages_and_process_table():
@@ -581,16 +586,27 @@ def _single_gpu_snapshot(*, util: int, mem: int) -> ClusterSnapshot:
     )
 
 
-def _multi_job_gpu_snapshot(*, process_job_id: str) -> ClusterSnapshot:
+def _two_jobs_one_node_snapshot() -> ClusterSnapshot:
     snapshot = _single_gpu_snapshot(util=75, mem=50)
     node = snapshot.nodes[0]
     gpu = node.gpus[0]
-    proc = replace(gpu.processes[0], slurm_job_id=process_job_id)
-    jobs = (
-        replace(node.jobs[0], job_id="101", name="first", elapsed="1:00"),
-        replace(node.jobs[0], job_id="202", name="second", elapsed="2:00"),
+    first = replace(node.jobs[0], job_id="101", name="first", elapsed="1:00")
+    second = replace(node.jobs[0], job_id="202", name="second", elapsed="2:00")
+    gpu_a = replace(
+        gpu,
+        index=1,
+        uuid="GPU-a",
+        slurm_job_id="101",
+        processes=(replace(gpu.processes[0], slurm_job_id="101"),),
     )
-    return replace(snapshot, nodes=(replace(node, jobs=jobs, gpus=(replace(gpu, processes=(proc,)),)),))
+    gpu_b = replace(
+        gpu,
+        index=2,
+        uuid="GPU-b",
+        slurm_job_id="202",
+        processes=(replace(gpu.processes[0], pid=5678, slurm_job_id="202"),),
+    )
+    return replace(snapshot, nodes=(replace(node, jobs=(first, second), gpus=(gpu_a, gpu_b)),))
 
 
 def _single_gpu_runner(*, util: int, mem: int):
@@ -606,12 +622,13 @@ def _single_gpu_runner(*, util: int, mem: int):
             return CommandResult(command, 0, "JobId=101 JobName=train AllocTRES=gres/gpu=2 NodeList=gpu001")
         if command[:3] == ("scontrol", "show", "hostnames"):
             return CommandResult(command, 0, "gpu001\n")
-        if command[:1] == ("ssh",):
+        if command[:1] == ("srun",):
             return CommandResult(
                 command,
                 0,
                 "__SLURM_GPU_TOP_META__\n"
                 "hostname=gpu001.example\n"
+                "step_gpus=0\n"
                 "driver_version=570.195.03\n"
                 "cuda_version=12.8\n"
                 "uptime_seconds=1572480\n"
@@ -627,9 +644,7 @@ def _single_gpu_runner(*, util: int, mem: int):
                 "# gpu pid type sm mem enc dec command\n"
                 "0 1234 C 6 2 - - python\n"
                 "__SLURM_GPU_TOP_PS__\n"
-                "1234 ez275 595.5 1.1 2:13:03 python train.py\n"
-                "__SLURM_GPU_TOP_CGROUP_JOB_IDS__\n"
-                "1234 101\n",
+                "1234 ez275 595.5 1.1 2:13:03 python train.py\n",
             )
         raise AssertionError(command)
 

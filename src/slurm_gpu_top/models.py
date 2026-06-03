@@ -53,6 +53,7 @@ class GPUDevice:
     temperature_c: Optional[int]
     power_draw_w: Optional[float]
     power_limit_w: Optional[float]
+    slurm_job_id: str = ""
     persistence_mode: str = ""
     pci_bus_id: str = ""
     display_active: str = ""
@@ -127,7 +128,6 @@ class CommandResult:
 class SnapshotBuilderConfig:
     user: Optional[str] = None
     all_users: bool = False
-    ssh_options: Tuple[str, ...] = ("BatchMode=yes", "ConnectTimeout=5")
     command_timeout_s: float = 8.0
     max_workers: int = 16
     now: float = field(default=0.0)
