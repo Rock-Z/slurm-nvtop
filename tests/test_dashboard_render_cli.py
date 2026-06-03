@@ -16,8 +16,8 @@ from slurm_gpu_top.models import (
 )
 from slurm_gpu_top.render import (
     _format_process_table_row,
-    _node_history_cell,
-    _node_history_layout,
+    _gpu_history_cell,
+    _gpu_history_layout,
     _process_table_layout,
     _timeline_axis,
     render_snapshot,
@@ -144,8 +144,8 @@ def test_render_snapshot_rich_mode_has_color_graphs_averages_and_process_table()
         width=120,
         color=True,
         unicode=True,
-        all_gpu_history=history.all_history(),
-        gpu_histories={key: tuple(values) for key, values in history.by_gpu.items()},
+        gpu_util_histories=history.gpu_util_histories(),
+        gpu_mem_histories=history.gpu_mem_histories(),
     )
 
     assert "\x1b[" in rendered
@@ -214,8 +214,8 @@ def test_gpu_header_data_separator_is_single_line():
     assert "╧" in lines[header_line + 1]
 
 
-def test_node_history_mem_and_util_halves_match_height():
-    cell = _node_history_cell(
+def test_gpu_history_mem_and_util_halves_match_height():
+    cell = _gpu_history_cell(
         "gpu001",
         width=40,
         util_history=(10, 20, 30, 40),
@@ -229,7 +229,7 @@ def test_node_history_mem_and_util_halves_match_height():
     assert axis_idx == len(cell) - axis_idx - 1
 
 
-def test_node_history_layout_aligns_axes_when_cell_widths_differ():
+def test_gpu_history_layout_aligns_axes_when_cell_widths_differ():
     nodes = []
     for idx in range(4):
         node = f"gpu{idx:03d}"
@@ -254,15 +254,15 @@ def test_node_history_layout_aligns_axes_when_cell_widths_differ():
             ),
         )
     snapshot = ClusterSnapshot(nodes=tuple(nodes))
-    histories = {node.node: (0, 25, 50, 75) for node in nodes}
+    histories = {(node.node, f"GPU-{idx}"): (0, 25, 50, 75) for idx, node in enumerate(nodes)}
 
-    widths, cells = _node_history_layout(
+    widths, cells = _gpu_history_layout(
         snapshot,
         width=137,
         color=False,
         unicode=True,
-        node_util_histories=histories,
-        node_mem_histories=histories,
+        util_histories=histories,
+        mem_histories=histories,
     )
     axis_indices = [next(idx for idx, line in enumerate(cell) if "now" in line) for cell in cells]
 
@@ -287,8 +287,8 @@ def test_render_snapshot_ascii_fallback_keeps_graph_visible():
         width=100,
         color=False,
         unicode=False,
-        all_gpu_history=(0, 25, 50, 75),
-        gpu_histories={("gpu001", "GPU-a"): (0, 25, 50, 75)},
+        gpu_util_histories={("gpu001", "GPU-a"): (0, 25, 50, 75)},
+        gpu_mem_histories={("gpu001", "GPU-a"): (0, 25, 50, 75)},
     )
 
     assert "\x1b[" not in rendered
@@ -308,8 +308,8 @@ def test_render_snapshot_compact_width_keeps_history_graph_visible():
         width=80,
         color=False,
         unicode=True,
-        all_gpu_history=(0, 25, 50, 75),
-        gpu_histories={("gpu001", "GPU-a"): (0, 25, 50, 75)},
+        gpu_util_histories={("gpu001", "GPU-a"): (0, 25, 50, 75)},
+        gpu_mem_histories={("gpu001", "GPU-a"): (0, 25, 50, 75)},
     )
 
     assert "SGTOP 0.2.1" in rendered
@@ -398,13 +398,13 @@ def test_render_snapshot_omits_repeated_gpu_label_block_and_draws_node_history()
         width=120,
         color=False,
         unicode=True,
-        node_util_histories={
-            "gpu001": (10, 30, 60, 90, 80, 70, 75, 75),
-            "gpu002": (90, 70, 50, 30, 20, 25, 25, 25),
+        gpu_util_histories={
+            ("gpu001", "GPU-a"): (10, 30, 60, 90, 80, 70, 75, 75),
+            ("gpu002", "GPU-b"): (90, 70, 50, 30, 20, 25, 25, 25),
         },
-        node_mem_histories={
-            "gpu001": (5, 10, 15, 20, 25, 30, 35, 40),
-            "gpu002": (40, 35, 30, 25, 20, 20, 20, 20),
+        gpu_mem_histories={
+            ("gpu001", "GPU-a"): (5, 10, 15, 20, 25, 30, 35, 40),
+            ("gpu002", "GPU-b"): (40, 35, 30, 25, 20, 20, 20, 20),
         },
     )
 
@@ -456,8 +456,8 @@ def test_render_snapshot_keeps_history_before_processes_when_height_is_tight():
         height=26,
         color=False,
         unicode=True,
-        node_util_histories={"gpu001": (10, 30, 60, 90, 80, 70, 75, 75)},
-        node_mem_histories={"gpu001": (5, 10, 15, 20, 25, 30, 35, 40)},
+        gpu_util_histories={("gpu001", "GPU-a"): (10, 30, 60, 90, 80, 70, 75, 75)},
+        gpu_mem_histories={("gpu001", "GPU-a"): (5, 10, 15, 20, 25, 30, 35, 40)},
     )
 
     assert "MEM ↑ / UTL ↓" in rendered

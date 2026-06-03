@@ -7,6 +7,7 @@ import sys
 import time
 from typing import Iterable, Mapping, Optional, Sequence
 
+from .history import GpuKey, gpu_key
 from .models import ClusterSnapshot, GPUDevice, GPUProcess, HostStats, NodeSnapshot, SlurmJob
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
@@ -38,13 +39,10 @@ def render_snapshot(
     height: Optional[int] = None,
     color: Optional[bool] = None,
     unicode: bool = True,
-    all_gpu_history: Sequence[Optional[int]] = (),
-    gpu_histories: Optional[dict[tuple[str, str], Sequence[Optional[int]]]] = None,
-    node_util_histories: Optional[dict[str, Sequence[Optional[int]]]] = None,
-    node_mem_histories: Optional[dict[str, Sequence[Optional[int]]]] = None,
+    gpu_util_histories: Optional[Mapping[GpuKey, Sequence[Optional[int]]]] = None,
+    gpu_mem_histories: Optional[Mapping[GpuKey, Sequence[Optional[int]]]] = None,
     version: str = "0.2.1",
 ) -> str:
-    del all_gpu_history, gpu_histories
     term_width, _term_height = _terminal_size()
     requested_width = width or term_width
     color = _should_color() if color is None else color
@@ -82,8 +80,8 @@ def render_snapshot(
             version=version,
             avg_util=avg_util,
             avg_mem=avg_mem,
-            node_util_histories=node_util_histories or {},
-            node_mem_histories=node_mem_histories or {},
+            gpu_util_histories=gpu_util_histories or {},
+            gpu_mem_histories=gpu_mem_histories or {},
         ),
     )
     process_lines = ["", *_cluster_process_box(snapshot, width=width, color=color, unicode=unicode)]
@@ -122,8 +120,8 @@ def _cluster_gpu_box(
     version: str,
     avg_util: Optional[float],
     avg_mem: Optional[float],
-    node_util_histories: Mapping[str, Sequence[Optional[int]]],
-    node_mem_histories: Mapping[str, Sequence[Optional[int]]],
+    gpu_util_histories: Mapping[GpuKey, Sequence[Optional[int]]],
+    gpu_mem_histories: Mapping[GpuKey, Sequence[Optional[int]]],
 ) -> Iterable[str]:
     chars = _box_chars(unicode)
     w = min(width, 140)
@@ -183,17 +181,17 @@ def _cluster_gpu_box(
             yield _joint_line(chars, gpu_widths, "top")
             yield from _gpu_rows(gpu, gpu_widths, chars, color=color, unicode=unicode)
         current_columns = gpu_widths
-    history_widths, history_rows = _node_history_layout(
+    history_widths, history_rows = _gpu_history_layout(
         snapshot,
         width=inner,
         color=color,
         unicode=unicode,
-        node_util_histories=node_util_histories,
-        node_mem_histories=node_mem_histories,
+        util_histories=gpu_util_histories,
+        mem_histories=gpu_mem_histories,
     )
     if history_rows:
         yield _column_transition_line(chars, current_columns or (), history_widths)
-        yield from _node_history_rows(history_rows, history_widths, chars)
+        yield from _gpu_history_rows(history_rows, history_widths, chars)
         current_columns = tuple(history_widths)
     if current_columns is None:
         yield chars["bl"] + chars["h2"] * inner + chars["br"]
@@ -272,49 +270,62 @@ def _status_line(node: NodeSnapshot, jobs: Iterable[SlurmJob], *, color: bool, e
     return _style(f"[{node.node}]", "bright_cyan", color) + job_segment + suffix
 
 
-def _node_history_layout(
+def _gpu_history_layout(
     snapshot: ClusterSnapshot,
     *,
     width: int,
     color: bool,
     unicode: bool,
-    node_util_histories: Mapping[str, Sequence[Optional[int]]],
-    node_mem_histories: Mapping[str, Sequence[Optional[int]]],
+    util_histories: Mapping[GpuKey, Sequence[Optional[int]]],
+    mem_histories: Mapping[GpuKey, Sequence[Optional[int]]],
 ) -> tuple[list[int], list[list[str]]]:
-    nodes = [
-        node
+    # One plot per GPU (keyed by job cgroup), not per node: several of a user's
+    # jobs can share a node, and each gets its own GPU row above.
+    entries = [
+        (node, gpu, key)
         for node in snapshot.nodes
-        if node.gpus and (node.node in node_util_histories or node.node in node_mem_histories)
+        for gpu in sorted(node.gpus, key=lambda item: item.index)
+        if (key := gpu_key(gpu)) in util_histories or key in mem_histories
     ]
-    if not nodes:
+    if not entries:
         return [], []
+
+    gpus_per_node: dict[str, int] = {}
+    for node, _gpu, _key in entries:
+        gpus_per_node[node.node] = gpus_per_node.get(node.node, 0) + 1
 
     inner = width
     max_cells = max(1, (inner + 1) // 18)
-    omitted = max(0, len(nodes) - max_cells)
-    nodes = nodes[:max_cells]
-    node_labels = [node.node for node in nodes]
+    omitted = max(0, len(entries) - max_cells)
+    entries = entries[:max_cells]
+    labels = [_gpu_history_label(node, gpu, shared=gpus_per_node[node.node] > 1) for node, gpu, _key in entries]
     if omitted:
-        node_labels[-1] = f"{node_labels[-1]} (+{omitted})"
-    cell_widths = _split_widths(inner, len(nodes))
-    side_height = max(_node_history_side_height(width) for width in cell_widths)
+        labels[-1] = f"{labels[-1]} (+{omitted})"
+    cell_widths = _split_widths(inner, len(entries))
+    side_height = max(_gpu_history_side_height(width) for width in cell_widths)
 
     return cell_widths, [
-        _node_history_cell(
-            node_labels[idx],
+        _gpu_history_cell(
+            labels[idx],
             width=cell_widths[idx],
-            util_history=node_util_histories.get(node.node, ()),
-            mem_history=node_mem_histories.get(node.node, ()),
+            util_history=util_histories.get(key, ()),
+            mem_history=mem_histories.get(key, ()),
             label=idx == 0,
             color=color,
             unicode=unicode,
             side_height=side_height,
         )
-        for idx, node in enumerate(nodes)
+        for idx, (_node, _gpu, key) in enumerate(entries)
     ]
 
 
-def _node_history_rows(
+def _gpu_history_label(node: NodeSnapshot, gpu: GPUDevice, *, shared: bool) -> str:
+    # Disambiguate with the GPU index only when a node hosts more than one plotted
+    # GPU, so the common one-job-per-node case keeps a clean node label.
+    return f"{node.node}:{gpu.index}" if shared else node.node
+
+
+def _gpu_history_rows(
     cells: Sequence[Sequence[str]],
     cell_widths: Sequence[int],
     chars: dict[str, str],
@@ -328,8 +339,8 @@ def _node_history_rows(
         )
 
 
-def _node_history_cell(
-    node: str,
+def _gpu_history_cell(
+    label_text_node: str,
     *,
     width: int,
     util_history: Sequence[Optional[int]],
@@ -339,7 +350,7 @@ def _node_history_cell(
     unicode: bool,
     side_height: Optional[int] = None,
 ) -> list[str]:
-    side_height = _node_history_side_height(width) if side_height is None else side_height
+    side_height = _gpu_history_side_height(width) if side_height is None else side_height
     label_text = "MEM ↑ / UTL ↓" if unicode else "MEM up / UTL down"
     mem_graph = _history_graph_lines(mem_history, width=width, height=side_height, direction="up", unicode=unicode)
     util_graph = _history_graph_lines(
@@ -352,14 +363,14 @@ def _node_history_cell(
     if label and mem_graph:
         mem_graph[0] = _overlay_left(mem_graph[0], label_text, width)
     return [
-        _style(_clip_visible(node, width), "bright_cyan", color),
+        _style(_clip_visible(label_text_node, width), "bright_cyan", color),
         *_style_lines(mem_graph, "magenta", color),
         _style(_timeline_axis(width, unicode=unicode), "bright_black", color),
         *_style_lines(util_graph, "cyan", color),
     ]
 
 
-def _node_history_side_height(width: int) -> int:
+def _gpu_history_side_height(width: int) -> int:
     return 3 if width < 34 else 4
 
 

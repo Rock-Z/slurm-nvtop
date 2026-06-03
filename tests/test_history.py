@@ -37,8 +37,8 @@ def test_history_tracks_all_gpu_average_and_per_gpu_samples():
     assert history.all_history() == (50, 20)
     assert history.gpu_history(_gpu("n1", 0, "GPU-a", 0)) == (10, 20)
     assert history.gpu_history(_gpu("n1", 1, "GPU-b", 0)) == (90, None)
-    assert history.node_util_histories() == {"n1": (50, 20)}
-    assert history.node_mem_histories() == {"n1": (0, 0)}
+    assert history.gpu_util_histories() == {("n1", "GPU-a"): (10, 20), ("n1", "GPU-b"): (90, None)}
+    assert history.gpu_mem_histories() == {("n1", "GPU-a"): (0, 0), ("n1", "GPU-b"): (0, 0)}
 
 
 def test_history_prunes_ended_gpus_and_respects_maxlen():
@@ -49,13 +49,12 @@ def test_history_prunes_ended_gpus_and_respects_maxlen():
 
     assert history.all_history() == (20, 30)
     assert ("n1", "GPU-a") not in history.by_gpu
-    assert "n1" not in history.by_node_util
-    assert "n1" not in history.by_node_mem
+    assert ("n1", "GPU-a") not in history.by_gpu_mem
     assert history.gpu_history(_gpu("n2", 0, "GPU-c", 0)) == (30,)
-    assert history.node_util_histories() == {"n2": (30,)}
+    assert history.gpu_util_histories() == {("n2", "GPU-c"): (30,)}
 
 
-def test_history_tracks_node_memory_averages():
+def test_history_tracks_per_gpu_memory():
     history = UtilizationHistory(maxlen=4)
     history.record(
         ClusterSnapshot(
@@ -71,7 +70,7 @@ def test_history_tracks_node_memory_averages():
         ),
     )
 
-    assert history.node_mem_histories() == {"n1": (50,)}
+    assert history.gpu_mem_histories() == {("n1", "GPU-a"): (25,), ("n1", "GPU-b"): (75,)}
 
 
 def _gpu(
