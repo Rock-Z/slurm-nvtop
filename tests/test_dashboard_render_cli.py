@@ -120,6 +120,29 @@ def test_render_snapshot_attributes_each_shared_node_gpu_to_its_own_job():
     assert "202 ez275/second" in node_lines[1] and "first" not in node_lines[1]
 
 
+def test_render_snapshot_groups_multiple_gpus_for_one_job_under_one_status_line():
+    snapshot = _single_gpu_snapshot(util=75, mem=50)
+    node = snapshot.nodes[0]
+    gpu = node.gpus[0]
+    proc = gpu.processes[0]
+    second_gpu = replace(
+        gpu,
+        index=1,
+        uuid="GPU-b",
+        slurm_job_id="101",
+        processes=(replace(proc, pid=5678, gpu_uuid="GPU-b", slurm_job_id="101"),),
+    )
+    snapshot = replace(snapshot, nodes=(replace(node, gpus=(gpu, second_gpu)),))
+
+    rendered = render_snapshot(snapshot, width=120, color=False, unicode=True)
+    node_lines = [line for line in rendered.splitlines() if "[gpu001]" in line]
+
+    assert len(node_lines) == 1
+    assert rendered.count("101 ez275/train") == 1
+    assert "  0  A100" in rendered
+    assert "  1  A100" in rendered
+
+
 def test_render_snapshot_does_not_fall_back_to_node_jobs_for_unidentified_gpu():
     base = _two_jobs_one_node_snapshot()
     node = base.nodes[0]

@@ -174,12 +174,15 @@ def _cluster_gpu_box(
             yield _box_line(_status_line(node, node.jobs, color=color), inner, chars)
             yield _box_line(_style("No GPUs reported by nvidia-smi.", "yellow", color), inner, chars)
             continue
-        for gpu_idx, gpu in enumerate(sorted(node.gpus, key=lambda item: item.index)):
-            if gpu_idx:
+        for group_idx, (jobs, gpus) in enumerate(_gpu_groups_for_node(node)):
+            if group_idx:
                 yield _column_transition_line(chars, gpu_widths, ())
-            yield _box_line(_status_line(node, _jobs_for_gpu(node, gpu), color=color, empty=""), inner, chars)
+            yield _box_line(_status_line(node, jobs, color=color, empty=""), inner, chars)
             yield _joint_line(chars, gpu_widths, "top")
-            yield from _gpu_rows(gpu, gpu_widths, chars, color=color, unicode=unicode)
+            for gpu_idx, gpu in enumerate(gpus):
+                if gpu_idx:
+                    yield _joint_line(chars, gpu_widths, "mid")
+                yield from _gpu_rows(gpu, gpu_widths, chars, color=color, unicode=unicode)
         current_columns = gpu_widths
     history_widths, history_rows = _gpu_history_layout(
         snapshot,
@@ -624,10 +627,31 @@ def _format_jobs(jobs: Iterable[SlurmJob], *, empty: str = "unknown") -> str:
 
 
 def _jobs_for_gpu(node: NodeSnapshot, gpu: GPUDevice) -> tuple[SlurmJob, ...]:
+    job_ids = _gpu_job_id_key(gpu)
+    return tuple(job for job in node.jobs if job.job_id in job_ids)
+
+
+def _gpu_groups_for_node(node: NodeSnapshot) -> tuple[tuple[tuple[SlurmJob, ...], tuple[GPUDevice, ...]], ...]:
+    groups: dict[tuple[str, ...], tuple[tuple[SlurmJob, ...], list[GPUDevice]]] = {}
+    first_index: dict[tuple[str, ...], int] = {}
+    for gpu in sorted(node.gpus, key=lambda item: item.index):
+        key = _gpu_job_id_key(gpu)
+        if key not in groups:
+            groups[key] = (_jobs_for_gpu(node, gpu), [])
+            first_index[key] = gpu.index
+        groups[key][1].append(gpu)
+
+    return tuple(
+        (jobs, tuple(gpus))
+        for key, (jobs, gpus) in sorted(groups.items(), key=lambda item: (first_index[item[0]], item[0]))
+    )
+
+
+def _gpu_job_id_key(gpu: GPUDevice) -> tuple[str, ...]:
     job_ids = {proc.slurm_job_id for proc in gpu.processes if proc.slurm_job_id}
     if gpu.slurm_job_id:
         job_ids.add(gpu.slurm_job_id)
-    return tuple(job for job in node.jobs if job.job_id in job_ids)
+    return tuple(sorted(job_ids))
 
 
 def _bar_stat(
