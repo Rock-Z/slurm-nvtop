@@ -15,6 +15,7 @@ from slurm_gpu_top.models import (
     SnapshotBuilderConfig,
 )
 from slurm_gpu_top.render import (
+    _average_histories,
     _format_process_table_row,
     _gpu_history_cell,
     _gpu_history_layout,
@@ -256,9 +257,22 @@ def test_gpu_history_layout_aligns_axes_when_cell_widths_differ():
     nodes = []
     for idx in range(4):
         node = f"gpu{idx:03d}"
+        job = SlurmJob(
+            job_id=str(100 + idx),
+            name=f"job{idx}",
+            user="ez275",
+            state="RUNNING",
+            elapsed="0:01",
+            node_count=1,
+            nodelist=node,
+            gres="gpu:1",
+            tres="gres/gpu=1",
+            nodes=(node,),
+        )
         nodes.append(
             NodeSnapshot(
                 node=node,
+                jobs=(job,),
                 gpus=(
                     GPUDevice(
                         node=node,
@@ -272,6 +286,7 @@ def test_gpu_history_layout_aligns_axes_when_cell_widths_differ():
                         temperature_c=None,
                         power_draw_w=None,
                         power_limit_w=None,
+                        slurm_job_id=job.job_id,
                     ),
                 ),
             ),
@@ -291,6 +306,34 @@ def test_gpu_history_layout_aligns_axes_when_cell_widths_differ():
 
     assert widths == [34, 34, 33, 33]
     assert len(set(axis_indices)) == 1
+
+
+def test_gpu_history_layout_aggregates_multiple_gpus_per_job():
+    snapshot = _single_gpu_snapshot(util=75, mem=50)
+    node = snapshot.nodes[0]
+    gpu = node.gpus[0]
+    second_gpu = replace(gpu, index=1, uuid="GPU-b", slurm_job_id="101")
+    snapshot = replace(snapshot, nodes=(replace(node, gpus=(gpu, second_gpu)),))
+
+    widths, cells = _gpu_history_layout(
+        snapshot,
+        width=80,
+        color=False,
+        unicode=True,
+        util_histories={
+            ("gpu001", "GPU-a"): (0, 50, 100),
+            ("gpu001", "GPU-b"): (100, 50, 0),
+        },
+        mem_histories={
+            ("gpu001", "GPU-a"): (10, 30, 50),
+            ("gpu001", "GPU-b"): (50, 30, 10),
+        },
+    )
+
+    assert widths == [80]
+    assert len(cells) == 1
+    assert cells[0][0] == "101 train"
+    assert _average_histories(((0, 50, 100), (100, 50, 0))) == (50, 50, 50)
 
 
 def test_timeline_axis_extends_past_120s_when_wide_enough():
@@ -382,7 +425,7 @@ def test_render_snapshot_uses_one_gpu_table_grouped_by_node():
     assert rendered.index("[gpu002]") > rendered.index("UTL:")
 
 
-def test_render_snapshot_omits_repeated_gpu_label_block_and_draws_node_history():
+def test_render_snapshot_omits_repeated_gpu_label_block_and_draws_job_history():
     first = _single_gpu_snapshot(util=75, mem=50)
     gpu = first.nodes[0].gpus[0]
     second_gpu = GPUDevice(
@@ -445,10 +488,10 @@ def test_render_snapshot_omits_repeated_gpu_label_block_and_draws_node_history()
     assert lines[second_node_line + 1].startswith("├")
     assert lines[second_node_line - 1].startswith("╞")
     assert "╧" in lines[second_node_line - 1]
-    history_node_line = next(idx for idx, line in enumerate(lines) if "gpu001" in line and "gpu002" in line)
-    history_line = lines[history_node_line - 1]
+    history_job_line = next(idx for idx, line in enumerate(lines) if "101 train" in line)
+    history_line = lines[history_job_line - 1]
     assert "╧" in history_line
-    assert "╤" in history_line
+    assert "╤" not in history_line
 
 
 def test_render_snapshot_respects_terminal_height():

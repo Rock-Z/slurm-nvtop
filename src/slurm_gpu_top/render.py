@@ -5,7 +5,7 @@ import re
 import shutil
 import sys
 import time
-from typing import Iterable, Mapping, Optional, Sequence
+from typing import Iterable, Mapping, Optional, Sequence, TypedDict
 
 from .history import GpuKey, gpu_key
 from .models import ClusterSnapshot, GPUDevice, GPUProcess, HostStats, NodeSnapshot, SlurmJob
@@ -30,6 +30,12 @@ COLORS = {
 }
 PARTIALS = "▏▎▍▌▋▊▉"
 MIN_DASHBOARD_WIDTH = 80
+
+
+class _GpuHistoryJobEntry(TypedDict):
+    label: str
+    util_history: tuple[Optional[int], ...]
+    mem_history: tuple[Optional[int], ...]
 
 
 def render_snapshot(
@@ -282,26 +288,15 @@ def _gpu_history_layout(
     util_histories: Mapping[GpuKey, Sequence[Optional[int]]],
     mem_histories: Mapping[GpuKey, Sequence[Optional[int]]],
 ) -> tuple[list[int], list[list[str]]]:
-    # One plot per GPU (keyed by job cgroup), not per node: several of a user's
-    # jobs can share a node, and each gets its own GPU row above.
-    entries = [
-        (node, gpu, key)
-        for node in snapshot.nodes
-        for gpu in sorted(node.gpus, key=lambda item: item.index)
-        if (key := gpu_key(gpu)) in util_histories or key in mem_histories
-    ]
+    entries = _gpu_history_job_entries(snapshot, util_histories=util_histories, mem_histories=mem_histories)
     if not entries:
         return [], []
-
-    gpus_per_node: dict[str, int] = {}
-    for node, _gpu, _key in entries:
-        gpus_per_node[node.node] = gpus_per_node.get(node.node, 0) + 1
 
     inner = width
     max_cells = max(1, (inner + 1) // 18)
     omitted = max(0, len(entries) - max_cells)
     entries = entries[:max_cells]
-    labels = [_gpu_history_label(node, gpu, shared=gpus_per_node[node.node] > 1) for node, gpu, _key in entries]
+    labels = [entry["label"] for entry in entries]
     if omitted:
         labels[-1] = f"{labels[-1]} (+{omitted})"
     cell_widths = _split_widths(inner, len(entries))
@@ -311,21 +306,66 @@ def _gpu_history_layout(
         _gpu_history_cell(
             labels[idx],
             width=cell_widths[idx],
-            util_history=util_histories.get(key, ()),
-            mem_history=mem_histories.get(key, ()),
+            util_history=entry["util_history"],
+            mem_history=entry["mem_history"],
             label=idx == 0,
             color=color,
             unicode=unicode,
             side_height=side_height,
         )
-        for idx, (_node, _gpu, key) in enumerate(entries)
+        for idx, entry in enumerate(entries)
     ]
 
 
-def _gpu_history_label(node: NodeSnapshot, gpu: GPUDevice, *, shared: bool) -> str:
-    # Disambiguate with the GPU index only when a node hosts more than one plotted
-    # GPU, so the common one-job-per-node case keeps a clean node label.
-    return f"{node.node}:{gpu.index}" if shared else node.node
+def _gpu_history_job_entries(
+    snapshot: ClusterSnapshot,
+    *,
+    util_histories: Mapping[GpuKey, Sequence[Optional[int]]],
+    mem_histories: Mapping[GpuKey, Sequence[Optional[int]]],
+) -> list[_GpuHistoryJobEntry]:
+    jobs_by_id = {job.job_id: job for node in snapshot.nodes for job in node.jobs}
+    gpu_keys_by_job: dict[str, list[GpuKey]] = {}
+    first_gpu_index: dict[str, tuple[int, int]] = {}
+
+    for node_idx, node in enumerate(snapshot.nodes):
+        for gpu in sorted(node.gpus, key=lambda item: item.index):
+            key = gpu_key(gpu)
+            if key not in util_histories and key not in mem_histories:
+                continue
+            for job_id in _gpu_job_id_key(gpu):
+                gpu_keys_by_job.setdefault(job_id, []).append(key)
+                first_gpu_index.setdefault(job_id, (node_idx, gpu.index))
+
+    entries: list[_GpuHistoryJobEntry] = []
+    for job_id, keys in sorted(gpu_keys_by_job.items(), key=lambda item: (first_gpu_index[item[0]], item[0])):
+        job = jobs_by_id.get(job_id)
+        label = _gpu_history_job_label(job, job_id)
+        entries.append(
+            {
+                "label": label,
+                "util_history": _average_histories(util_histories.get(key, ()) for key in keys),
+                "mem_history": _average_histories(mem_histories.get(key, ()) for key in keys),
+            },
+        )
+    return entries
+
+
+def _gpu_history_job_label(job: SlurmJob | None, job_id: str) -> str:
+    if job is None:
+        return job_id
+    return f"{job.job_id} {job.name}"
+
+
+def _average_histories(histories: Iterable[Sequence[Optional[int]]]) -> tuple[Optional[int], ...]:
+    histories = [tuple(history) for history in histories if history]
+    if not histories:
+        return ()
+    max_len = max(len(history) for history in histories)
+    averaged: list[Optional[int]] = []
+    for offset in range(max_len, 0, -1):
+        values = [history[-offset] for history in histories if len(history) >= offset and history[-offset] is not None]
+        averaged.append(round(sum(values) / len(values)) if values else None)
+    return tuple(averaged)
 
 
 def _gpu_history_rows(
